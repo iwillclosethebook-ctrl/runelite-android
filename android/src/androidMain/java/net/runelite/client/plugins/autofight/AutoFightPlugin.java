@@ -10,6 +10,7 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Random;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -21,12 +22,15 @@ import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.api.NPCComposition;
+import net.runelite.api.Perspective;
 import net.runelite.api.Player;
+import net.runelite.api.Point;
 import net.runelite.api.Scene;
 import net.runelite.api.Skill;
 import net.runelite.api.Tile;
 import net.runelite.api.TileItem;
 import net.runelite.api.WorldView;
+import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.GameStateChanged;
@@ -51,27 +55,39 @@ import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.Text;
 
 /**
- * Highlights NPCs by ID for touch devices, marks your current and next target, counts kills,
- * and (optionally, both off by default) auto-attacks matching NPCs and auto-loots listed items
- * after a kill. Automation goes through the client's own menu actions, not screen taps.
+ * Highlights NPCs by ID, marks the current and next target, counts kills, and
+ * optionally auto-attacks and auto-loots. Automation goes through the client's own
+ * menu actions rather than synthetic screen taps.
+ *
+ * The matching-NPC list is rebuilt from the world view every tick. An incrementally
+ * maintained list drifts out of sync with the scene (a missed despawn, a scene reload,
+ * an NPC that changes id), and when it empties the plugin keeps drawing every matching
+ * NPC in the "other" colour while believing there is nothing to fight.
  */
 @PluginDescriptor(
 	name = "AutoFight Highlight",
-	description = "Highlight NPCs by ID, mark your current and next target, count kills, optional auto-attack and auto-loot",
-	tags = {"npc", "highlight", "indicators", "combat", "kill", "counter", "mobile", "id", "loot", "attack"}
+	description = "Highlight NPCs by ID, mark your current and next target, count kills, optional auto-attack, auto-loot and smart camera",
+	tags = {"npc", "highlight", "indicators", "combat", "kill", "counter", "mobile", "id", "loot", "attack", "camera"}
 )
 public class AutoFightPlugin extends Plugin
 {
 	private static final String TAG = "AF-Tag";
 	private static final String UNTAG = "AF-Untag";
 
-	/** Ticks after a counted kill during which the looter is allowed to act. */
+	/** Ticks after a counted kill during which the looter may act. */
 	private static final int LOOT_WINDOW_TICKS = 15;
 
-	/** Ticks to wait after any automated click before clicking again. */
-	private static final int ACTION_COOLDOWN_TICKS = 2;
+	/** Ticks to wait for combat to actually start before assuming the attack click was lost. */
+	private static final int ATTACK_WAIT_TICKS = 6;
 
-	/** Index in an NPC's action list maps to the matching NPC menu action. */
+	/** Camera yaw is measured in JAU14: 2^14 units to a full turn, not 2^11. */
+	private static final int JAU14_MASK = 0x3FFF;
+	private static final double JAU14_PER_RADIAN = 16384.0d / (2.0d * Math.PI);
+
+	/** How far off dead centre the camera is allowed to settle, in JAU14. */
+	private static final int CAMERA_JITTER = 450;
+
+	/** An NPC's action index maps to the matching NPC menu action. */
 	private static final MenuAction[] NPC_OPTIONS = {
 		MenuAction.NPC_FIRST_OPTION,
 		MenuAction.NPC_SECOND_OPTION,
@@ -114,7 +130,9 @@ public class AutoFightPlugin extends Plugin
 	private final List<NPC> matching = new ArrayList<>();
 
 	private final Set<Integer> lootIds = new HashSet<>();
-	private final Set<String> lootNames = new HashSet<>(); // stored lowercase
+	private final Set<String> lootNames = new HashSet<>(); // lowercase
+
+	private final Random random = new Random();
 
 	private NPC currentTarget;
 	private NPC nextTarget;
@@ -126,7 +144,10 @@ public class AutoFightPlugin extends Plugin
 	private boolean lowHpNotified;
 
 	private int lootTicksLeft;
-	private int actionCooldown;
+	private int waitTicks;
+	private NPC pendingTarget;
+	private int pendingTicks;
+	private int cameraCooldown;
 
 	private final Function<NPC, HighlightedNpc> highlighter = this::highlight;
 
@@ -154,8 +175,7 @@ public class AutoFightPlugin extends Plugin
 		matching.clear();
 		currentTarget = null;
 		nextTarget = null;
-		lootTicksLeft = 0;
-		actionCooldown = 0;
+		clearAutomation();
 		resetSession();
 	}
 
@@ -208,21 +228,42 @@ public class AutoFightPlugin extends Plugin
 		return npc != null && targetIds.contains(npc.getId());
 	}
 
-	private void rescan()
+	/** Rebuilds the matching list from the live scene. Cheap, and cannot go stale. */
+	private void refreshMatching()
 	{
 		matching.clear();
-		if (client.getGameState() == GameState.LOGGED_IN)
+		if (client.getGameState() != GameState.LOGGED_IN)
 		{
-			for (NPC npc : client.getTopLevelWorldView().npcs())
+			return;
+		}
+		WorldView wv = client.getTopLevelWorldView();
+		if (wv == null)
+		{
+			return;
+		}
+		for (NPC npc : wv.npcs())
+		{
+			if (matches(npc) && !npcUtil.isDying(npc))
 			{
-				if (matches(npc))
-				{
-					matching.add(npc);
-				}
+				matching.add(npc);
 			}
 		}
+	}
+
+	private void rescan()
+	{
+		refreshMatching();
 		updateTargets();
 		npcOverlayService.rebuild();
+	}
+
+	private void clearAutomation()
+	{
+		lootTicksLeft = 0;
+		waitTicks = 0;
+		pendingTarget = null;
+		pendingTicks = 0;
+		cameraCooldown = 0;
 	}
 
 	private void updateTargets()
@@ -235,15 +276,17 @@ public class AutoFightPlugin extends Plugin
 			return;
 		}
 
+		// A dying NPC is not something we are still fighting: treating it as the current
+		// target blocks looting and the next attack until it finishes despawning.
 		NPC fighting = null;
 		Actor interacting = local.getInteracting();
-		if (interacting instanceof NPC && matches((NPC) interacting))
+		if (interacting instanceof NPC && matches((NPC) interacting) && !npcUtil.isDying((NPC) interacting))
 		{
 			fighting = (NPC) interacting;
 		}
 		else
 		{
-			// Something attacking us counts too (e.g. aggressive NPCs, retaliation not started yet).
+			// Something attacking us counts too (aggressive NPCs, retaliation not started yet).
 			for (NPC npc : matching)
 			{
 				if (npc.getInteracting() == local && !npcUtil.isDying(npc))
@@ -255,9 +298,36 @@ public class AutoFightPlugin extends Plugin
 		}
 		currentTarget = fighting;
 
-		NPC best = null;
-		int bestDist = Integer.MAX_VALUE;
+		// Keep the existing choice while it is still valid, so the highlight does not
+		// flicker between equally good candidates every tick.
+		if (!isValidNext(nextTarget, local))
+		{
+			nextTarget = pickNext(local);
+		}
+	}
+
+	private boolean isValidNext(NPC npc, Player local)
+	{
+		if (npc == null || npc == currentTarget || !matching.contains(npc) || npcUtil.isDying(npc))
+		{
+			return false;
+		}
+		if (config.skipOthersFights())
+		{
+			Actor other = npc.getInteracting();
+			if (other instanceof Player && other != local)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Nearest matching NPC, or a random pick from the nearest few when a target pool is set. */
+	private NPC pickNext(Player local)
+	{
 		WorldPoint me = local.getWorldLocation();
+		List<NPC> candidates = new ArrayList<>();
 		for (NPC npc : matching)
 		{
 			if (npc == currentTarget || npcUtil.isDying(npc))
@@ -272,14 +342,18 @@ public class AutoFightPlugin extends Plugin
 					continue;
 				}
 			}
-			int d = npc.getWorldLocation().distanceTo(me);
-			if (d < bestDist)
-			{
-				bestDist = d;
-				best = npc;
-			}
+			candidates.add(npc);
 		}
-		nextTarget = best;
+		if (candidates.isEmpty())
+		{
+			return null;
+		}
+		candidates.sort((a, b) -> Integer.compare(
+			a.getWorldLocation().distanceTo(me),
+			b.getWorldLocation().distanceTo(me)));
+
+		int pool = Math.min(Math.max(config.targetPool(), 1), candidates.size());
+		return candidates.get(pool <= 1 ? 0 : random.nextInt(pool));
 	}
 
 	private HighlightedNpc highlight(NPC npc)
@@ -330,10 +404,22 @@ public class AutoFightPlugin extends Plugin
 
 	// ---------------------------------------------------------------- automation
 
+	/** Random pause before an automated click, so the cadence is not metronomic. */
+	private int reactionDelay()
+	{
+		int min = Math.max(config.reactionMin(), 0);
+		int max = Math.max(config.reactionMax(), min);
+		int delay = min + (max > min ? random.nextInt(max - min + 1) : 0);
+		if (config.hesitateChance() > 0 && random.nextInt(100) < config.hesitateChance())
+		{
+			delay += 1 + random.nextInt(3);
+		}
+		return delay;
+	}
+
 	/**
-	 * Runs once per game tick on the client thread. At most one automated click per
-	 * cooldown window; looting takes priority over attacking, and both only happen
-	 * when we are not already in combat.
+	 * One decision per tick, on the client thread. Looting takes priority over attacking,
+	 * and nothing is attempted while we are in combat with a live matching NPC.
 	 */
 	private void automate()
 	{
@@ -341,35 +427,60 @@ public class AutoFightPlugin extends Plugin
 		{
 			lootTicksLeft--;
 		}
-		if (actionCooldown > 0)
+
+		Player local = client.getLocalPlayer();
+		if (local == null)
 		{
-			actionCooldown--;
 			return;
 		}
 
-		Player local = client.getLocalPlayer();
-		if (local == null || currentTarget != null || local.getInteracting() != null)
+		// In combat: the attack landed, so drop any pending state.
+		if (currentTarget != null)
 		{
+			pendingTarget = null;
+			pendingTicks = 0;
 			return;
+		}
+
+		if (waitTicks > 0)
+		{
+			waitTicks--;
+			return;
+		}
+
+		// An attack was sent but combat never started (out of reach, click lost, target
+		// taken by someone else). Give it a few ticks, then fall through and try again
+		// rather than waiting on it forever.
+		if (pendingTarget != null)
+		{
+			pendingTicks++;
+			if (pendingTicks < ATTACK_WAIT_TICKS && matching.contains(pendingTarget))
+			{
+				return;
+			}
+			pendingTarget = null;
+			pendingTicks = 0;
 		}
 
 		if (config.autoLoot() && lootTicksLeft > 0 && tryLoot(local))
 		{
-			actionCooldown = ACTION_COOLDOWN_TICKS;
+			waitTicks = reactionDelay();
 			return;
 		}
 
 		if (config.autoAttack() && nextTarget != null)
 		{
 			attack(nextTarget);
-			actionCooldown = ACTION_COOLDOWN_TICKS;
+			pendingTarget = nextTarget;
+			pendingTicks = 0;
+			waitTicks = reactionDelay();
 		}
 	}
 
 	/**
-	 * Invokes the NPC's "Attack" action through the client's own menu handling.
-	 * The menu slot is looked up from the NPC's action list rather than hard-coded,
-	 * because the "Attack" option is in a different position for different NPCs.
+	 * Invokes the NPC's "Attack" action through the client's own menu handling. The menu
+	 * slot is read from the NPC's action list rather than hard-coded, because "Attack"
+	 * sits in a different position for different NPCs.
 	 */
 	private void attack(NPC npc)
 	{
@@ -405,8 +516,8 @@ public class AutoFightPlugin extends Plugin
 	}
 
 	/**
-	 * Finds the nearest ground item that matches the loot list within the loot radius
-	 * and invokes "Take" on it. Returns true if a click was sent.
+	 * Takes the nearest ground item matching the loot list within the loot radius.
+	 * Returns true if a click was sent.
 	 */
 	private boolean tryLoot(Player local)
 	{
@@ -416,12 +527,30 @@ public class AutoFightPlugin extends Plugin
 		}
 
 		WorldView wv = client.getTopLevelWorldView();
+		if (wv == null)
+		{
+			return false;
+		}
 		Scene scene = wv.getScene();
+		if (scene == null)
+		{
+			return false;
+		}
+		LocalPoint here = local.getLocalLocation();
+		if (here == null)
+		{
+			return false;
+		}
+
 		Tile[][][] tiles = scene.getTiles();
 		int plane = wv.getPlane();
+		if (plane < 0 || plane >= tiles.length)
+		{
+			return false;
+		}
 
-		int meX = local.getLocalLocation().getSceneX();
-		int meY = local.getLocalLocation().getSceneY();
+		int meX = here.getSceneX();
+		int meY = here.getSceneY();
 		int radius = config.lootRadius();
 
 		TileItem bestItem = null;
@@ -430,10 +559,14 @@ public class AutoFightPlugin extends Plugin
 		int bestDist = Integer.MAX_VALUE;
 
 		Tile[][] plane2d = tiles[plane];
-		for (int x = 0; x < plane2d.length; x++)
+		for (int x = Math.max(meX - radius, 0); x <= Math.min(meX + radius, plane2d.length - 1); x++)
 		{
 			Tile[] column = plane2d[x];
-			for (int y = 0; y < column.length; y++)
+			if (column == null)
+			{
+				continue;
+			}
+			for (int y = Math.max(meY - radius, 0); y <= Math.min(meY + radius, column.length - 1); y++)
 			{
 				Tile tile = column[y];
 				if (tile == null)
@@ -441,7 +574,7 @@ public class AutoFightPlugin extends Plugin
 					continue;
 				}
 				int d = Math.max(Math.abs(x - meX), Math.abs(y - meY));
-				if (d > radius || d >= bestDist)
+				if (d >= bestDist)
 				{
 					continue;
 				}
@@ -496,7 +629,85 @@ public class AutoFightPlugin extends Plugin
 
 	private String itemName(int id)
 	{
-		return Text.removeTags(itemManager.getItemComposition(id).getName());
+		return Text.removeTags(String.valueOf(itemManager.getItemComposition(id).getName()));
+	}
+
+	// ---------------------------------------------------------------- camera
+
+	/**
+	 * Turns the camera towards the target only when it has drifted off screen or close to
+	 * the edge, so it does not fight the player for control on every tick.
+	 */
+	private void updateCamera()
+	{
+		if (!config.smartCamera())
+		{
+			return;
+		}
+		if (cameraCooldown > 0)
+		{
+			cameraCooldown--;
+			return;
+		}
+
+		NPC target = currentTarget != null ? currentTarget : nextTarget;
+		Player local = client.getLocalPlayer();
+		if (target == null || local == null)
+		{
+			return;
+		}
+
+		LocalPoint targetPoint = target.getLocalLocation();
+		LocalPoint here = local.getLocalLocation();
+		if (targetPoint == null || here == null || onScreen(targetPoint))
+		{
+			return;
+		}
+
+		int dx = targetPoint.getX() - here.getX();
+		int dy = targetPoint.getY() - here.getY();
+		if (dx == 0 && dy == 0)
+		{
+			return;
+		}
+
+		// Perspective projects with x1 = x*cos(yaw) + y*sin(yaw); x1 is the horizontal
+		// screen axis, so the target is centred when yaw = atan2(-dx, dy).
+		double radians = Math.atan2(-dx, dy);
+		int yaw = (int) Math.round(radians * JAU14_PER_RADIAN);
+		yaw += random.nextInt(2 * CAMERA_JITTER + 1) - CAMERA_JITTER;
+
+		client.setCameraYawTarget(yaw & JAU14_MASK);
+		cameraCooldown = 2 + random.nextInt(3);
+	}
+
+	/** True when the point projects comfortably inside the viewport. */
+	private boolean onScreen(LocalPoint point)
+	{
+		WorldView wv = client.getTopLevelWorldView();
+		if (wv == null)
+		{
+			return false;
+		}
+		Point canvas = Perspective.localToCanvas(client, point, wv.getPlane());
+		if (canvas == null)
+		{
+			return false;
+		}
+
+		int width = client.getViewportWidth();
+		int height = client.getViewportHeight();
+		if (width <= 0 || height <= 0)
+		{
+			return false;
+		}
+
+		int x = canvas.getX() - client.getViewportXOffset();
+		int y = canvas.getY() - client.getViewportYOffset();
+		int marginX = width * config.cameraMargin() / 100;
+		int marginY = height * config.cameraMargin() / 100;
+
+		return x >= marginX && x <= width - marginX && y >= marginY && y <= height - marginY;
 	}
 
 	// ---------------------------------------------------------------- events
@@ -531,8 +742,7 @@ public class AutoFightPlugin extends Plugin
 			matching.clear();
 			currentTarget = null;
 			nextTarget = null;
-			lootTicksLeft = 0;
-			actionCooldown = 0;
+			clearAutomation();
 		}
 	}
 
@@ -558,6 +768,11 @@ public class AutoFightPlugin extends Plugin
 		{
 			nextTarget = null;
 		}
+		if (npc == pendingTarget)
+		{
+			pendingTarget = null;
+			pendingTicks = 0;
+		}
 	}
 
 	@Subscribe
@@ -582,6 +797,14 @@ public class AutoFightPlugin extends Plugin
 			lootTicksLeft = LOOT_WINDOW_TICKS;
 			notifier.notify(config.notifyKill(), "Killed " + Text.removeTags(String.valueOf(npc.getName())) + " (" + kills + ")");
 		}
+		if (npc == currentTarget)
+		{
+			currentTarget = null;
+		}
+		if (npc == nextTarget)
+		{
+			nextTarget = null;
+		}
 	}
 
 	@Subscribe
@@ -589,7 +812,10 @@ public class AutoFightPlugin extends Plugin
 	{
 		NPC prevCurrent = currentTarget;
 		NPC prevNext = nextTarget;
+
+		refreshMatching();
 		updateTargets();
+
 		if (prevCurrent != currentTarget || prevNext != nextTarget)
 		{
 			npcOverlayService.rebuild();
@@ -600,7 +826,7 @@ public class AutoFightPlugin extends Plugin
 			sessionStart = Instant.now();
 		}
 
-		// Idle alert: only while matching NPCs are around and we've started a session.
+		// Idle alert: only while matching NPCs are around and a session has started.
 		if (currentTarget == null && !matching.isEmpty() && sessionStart != null)
 		{
 			idleCount++;
@@ -632,6 +858,7 @@ public class AutoFightPlugin extends Plugin
 		}
 
 		automate();
+		updateCamera();
 	}
 
 	@Subscribe

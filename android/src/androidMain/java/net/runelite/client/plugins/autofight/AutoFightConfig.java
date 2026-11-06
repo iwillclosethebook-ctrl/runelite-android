@@ -31,6 +31,12 @@ public interface AutoFightConfig extends Config
 	@ConfigSection(name = "Automation", description = "Auto-attack and auto-loot (both off by default)", position = 4)
 	String automationSection = "automation";
 
+	@ConfigSection(name = "Humanizer", description = "Randomness applied to automated actions", position = 5)
+	String humanSection = "human";
+
+	@ConfigSection(name = "Camera", description = "Keep the target on screen", position = 6)
+	String cameraSection = "camera";
+
 	// ---- Targets ----
 
 	@ConfigItem(
@@ -257,5 +263,86 @@ public interface AutoFightConfig extends Config
 	default int lootRadius()
 	{
 		return 8;
+	}
+
+	// ---- Humanizer ----
+
+	@Range(min = 0, max = 20)
+	@ConfigItem(
+		keyName = "reactionMin",
+		name = "Reaction min (ticks)",
+		description = "Shortest pause before an automated click (1 tick = 0.6s)",
+		section = humanSection,
+		position = 0
+	)
+	default int reactionMin()
+	{
+		return 2;
+	}
+
+	@Range(min = 0, max = 40)
+	@ConfigItem(
+		keyName = "reactionMax",
+		name = "Reaction max (ticks)",
+		description = "Longest pause before an automated click. Clamped to at least the minimum.",
+		section = humanSection,
+		position = 1
+	)
+	default int reactionMax()
+	{
+		return 6;
+	}
+
+	@Range(max = 100)
+	@ConfigItem(
+		keyName = "hesitateChance",
+		name = "Hesitate chance (%)",
+		description = "Chance of an extra 1-3 tick pause on top of the reaction delay",
+		section = humanSection,
+		position = 2
+	)
+	default int hesitateChance()
+	{
+		return 15;
+	}
+
+	@Range(min = 1, max = 5)
+	@ConfigItem(
+		keyName = "targetPool",
+		name = "Target pool",
+		description = "Pick at random from the N nearest NPCs instead of always the closest (1 = always closest)",
+		section = humanSection,
+		position = 3
+	)
+	default int targetPool()
+	{
+		return 2;
+	}
+
+	// ---- Camera ----
+
+	@ConfigItem(
+		keyName = "smartCamera",
+		name = "Smart camera",
+		description = "Rotate the camera to bring the target back on screen when it drifts out of view",
+		section = cameraSection,
+		position = 0
+	)
+	default boolean smartCamera()
+	{
+		return false;
+	}
+
+	@Range(min = 0, max = 40)
+	@ConfigItem(
+		keyName = "cameraMargin",
+		name = "Edge margin (%)",
+		description = "How close to the screen edge the target may get before the camera turns",
+		section = cameraSection,
+		position = 1
+	)
+	default int cameraMargin()
+	{
+		return 20;
 	}
 }
