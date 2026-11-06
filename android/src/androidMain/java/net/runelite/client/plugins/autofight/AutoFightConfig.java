@@ -14,6 +14,7 @@ public interface AutoFightConfig extends Config
 {
 	String GROUP = "autofight";
 	String NPC_IDS_KEY = "npcIds";
+	String LOOT_ITEMS_KEY = "lootItems";
 
 	@ConfigSection(name = "Targets", description = "Which NPCs to highlight", position = 0)
 	String targetsSection = "targets";
@@ -26,6 +27,9 @@ public interface AutoFightConfig extends Config
 
 	@ConfigSection(name = "Tracking & alerts", description = "Kill counter and notifications", position = 3)
 	String alertsSection = "alerts";
+
+	@ConfigSection(name = "Automation", description = "Auto-attack and auto-loot (both off by default)", position = 4)
+	String automationSection = "automation";
 
 	// ---- Targets ----
 
@@ -202,5 +206,56 @@ public interface AutoFightConfig extends Config
 	default int lowHp()
 	{
 		return 0;
+	}
+
+	// ---- Automation ----
+
+	@ConfigItem(
+		keyName = "autoAttack",
+		name = "Auto-attack",
+		description = "When not fighting, invoke 'Attack' on the next free matching NPC",
+		section = automationSection,
+		position = 0
+	)
+	default boolean autoAttack()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "autoLoot",
+		name = "Auto-loot",
+		description = "After a counted kill, pick up the items listed below",
+		section = automationSection,
+		position = 1
+	)
+	default boolean autoLoot()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = LOOT_ITEMS_KEY,
+		name = "Loot items",
+		description = "Comma-separated item IDs or exact names, e.g. 526, Feather. Empty = loot nothing.",
+		section = automationSection,
+		position = 2
+	)
+	default String lootItems()
+	{
+		return "";
+	}
+
+	@Range(min = 1, max = 15)
+	@ConfigItem(
+		keyName = "lootRadius",
+		name = "Loot radius",
+		description = "Tiles around you to search for loot",
+		section = automationSection,
+		position = 3
+	)
+	default int lootRadius()
+	{
+		return 8;
 	}
 }
