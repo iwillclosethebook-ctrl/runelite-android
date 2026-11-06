@@ -20,6 +20,7 @@ import net.runelite.api.GameState;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
+import net.runelite.api.NPCComposition;
 import net.runelite.api.Player;
 import net.runelite.api.Scene;
 import net.runelite.api.Skill;
@@ -372,7 +373,16 @@ public class AutoFightPlugin extends Plugin
 	 */
 	private void attack(NPC npc)
 	{
-		String[] actions = npc.getComposition().getActions();
+		NPCComposition comp = npc.getTransformedComposition();
+		if (comp == null)
+		{
+			comp = npc.getComposition();
+		}
+		if (comp == null)
+		{
+			return;
+		}
+		String[] actions = comp.getActions();
 		if (actions == null)
 		{
 			return;
@@ -381,13 +391,14 @@ public class AutoFightPlugin extends Plugin
 		{
 			if ("Attack".equalsIgnoreCase(actions[i]))
 			{
-				client.invokeMenuAction(
-					"Attack",
-					Text.removeTags(String.valueOf(npc.getName())),
-					npc.getIndex(),
-					NPC_OPTIONS[i],
+				client.menuAction(
 					0,
-					0);
+					0,
+					NPC_OPTIONS[i],
+					npc.getIndex(),
+					-1,
+					"Attack",
+					Text.removeTags(String.valueOf(npc.getName())));
 				return;
 			}
 		}
@@ -458,13 +469,14 @@ public class AutoFightPlugin extends Plugin
 			return false;
 		}
 
-		client.invokeMenuAction(
-			"Take",
-			itemName(bestItem.getId()),
-			bestItem.getId(),
-			MenuAction.GROUND_ITEM_THIRD_OPTION,
+		client.menuAction(
 			bestX,
-			bestY);
+			bestY,
+			MenuAction.GROUND_ITEM_THIRD_OPTION,
+			bestItem.getId(),
+			bestItem.getId(),
+			"Take",
+			itemName(bestItem.getId()));
 		return true;
 	}
 
