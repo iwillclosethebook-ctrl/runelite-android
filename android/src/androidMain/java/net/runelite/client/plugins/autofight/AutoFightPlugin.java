@@ -9,6 +9,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -20,7 +21,11 @@ import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.api.Player;
+import net.runelite.api.Scene;
 import net.runelite.api.Skill;
+import net.runelite.api.Tile;
+import net.runelite.api.TileItem;
+import net.runelite.api.WorldView;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.GameStateChanged;
@@ -34,6 +39,7 @@ import net.runelite.client.config.ConfigManager;
 import net.runelite.client.config.Notification;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.game.ItemManager;
 import net.runelite.client.game.NpcUtil;
 import net.runelite.client.game.npcoverlay.HighlightedNpc;
 import net.runelite.client.game.npcoverlay.NpcOverlayService;
@@ -44,19 +50,34 @@ import net.runelite.client.util.ColorUtil;
 import net.runelite.client.util.Text;
 
 /**
- * Highlights NPCs by ID for touch devices. Everything is driven by typed IDs or a
- * long-press menu option, since the stock NPC Indicators "Tag" option needs Shift.
- * This plugin only draws and notifies; it never sends input to the game.
+ * Highlights NPCs by ID for touch devices, marks your current and next target, counts kills,
+ * and (optionally, both off by default) auto-attacks matching NPCs and auto-loots listed items
+ * after a kill. Automation goes through the client's own menu actions, not screen taps.
  */
 @PluginDescriptor(
 	name = "AutoFight Highlight",
-	description = "Highlight NPCs by ID, mark your current and next target, count kills",
-	tags = {"npc", "highlight", "indicators", "combat", "kill", "counter", "mobile", "id"}
+	description = "Highlight NPCs by ID, mark your current and next target, count kills, optional auto-attack and auto-loot",
+	tags = {"npc", "highlight", "indicators", "combat", "kill", "counter", "mobile", "id", "loot", "attack"}
 )
 public class AutoFightPlugin extends Plugin
 {
 	private static final String TAG = "AF-Tag";
 	private static final String UNTAG = "AF-Untag";
+
+	/** Ticks after a counted kill during which the looter is allowed to act. */
+	private static final int LOOT_WINDOW_TICKS = 15;
+
+	/** Ticks to wait after any automated click before clicking again. */
+	private static final int ACTION_COOLDOWN_TICKS = 2;
+
+	/** Index in an NPC's action list maps to the matching NPC menu action. */
+	private static final MenuAction[] NPC_OPTIONS = {
+		MenuAction.NPC_FIRST_OPTION,
+		MenuAction.NPC_SECOND_OPTION,
+		MenuAction.NPC_THIRD_OPTION,
+		MenuAction.NPC_FOURTH_OPTION,
+		MenuAction.NPC_FIFTH_OPTION
+	};
 
 	@Inject
 	private Client client;
@@ -85,8 +106,14 @@ public class AutoFightPlugin extends Plugin
 	@Inject
 	private NpcUtil npcUtil;
 
+	@Inject
+	private ItemManager itemManager;
+
 	private final Set<Integer> targetIds = new HashSet<>();
 	private final List<NPC> matching = new ArrayList<>();
+
+	private final Set<Integer> lootIds = new HashSet<>();
+	private final Set<String> lootNames = new HashSet<>(); // stored lowercase
 
 	private NPC currentTarget;
 	private NPC nextTarget;
@@ -96,6 +123,9 @@ public class AutoFightPlugin extends Plugin
 	private int idleCount;
 	private boolean idleNotified;
 	private boolean lowHpNotified;
+
+	private int lootTicksLeft;
+	private int actionCooldown;
 
 	private final Function<NPC, HighlightedNpc> highlighter = this::highlight;
 
@@ -109,6 +139,7 @@ public class AutoFightPlugin extends Plugin
 	protected void startUp()
 	{
 		parseIds();
+		parseLoot();
 		overlayManager.add(overlay);
 		npcOverlayService.registerHighlighter(highlighter);
 		clientThread.invoke(this::rescan);
@@ -122,6 +153,8 @@ public class AutoFightPlugin extends Plugin
 		matching.clear();
 		currentTarget = null;
 		nextTarget = null;
+		lootTicksLeft = 0;
+		actionCooldown = 0;
 		resetSession();
 	}
 
@@ -143,6 +176,28 @@ public class AutoFightPlugin extends Plugin
 			catch (NumberFormatException ignored)
 			{
 				// not a number; skip it
+			}
+		}
+	}
+
+	private void parseLoot()
+	{
+		lootIds.clear();
+		lootNames.clear();
+		for (String part : config.lootItems().split(","))
+		{
+			String p = part.trim();
+			if (p.isEmpty())
+			{
+				continue;
+			}
+			try
+			{
+				lootIds.add(Integer.parseInt(p));
+			}
+			catch (NumberFormatException notAnId)
+			{
+				lootNames.add(p.toLowerCase(Locale.ROOT));
 			}
 		}
 	}
@@ -272,6 +327,166 @@ public class AutoFightPlugin extends Plugin
 		lowHpNotified = false;
 	}
 
+	// ---------------------------------------------------------------- automation
+
+	/**
+	 * Runs once per game tick on the client thread. At most one automated click per
+	 * cooldown window; looting takes priority over attacking, and both only happen
+	 * when we are not already in combat.
+	 */
+	private void automate()
+	{
+		if (lootTicksLeft > 0)
+		{
+			lootTicksLeft--;
+		}
+		if (actionCooldown > 0)
+		{
+			actionCooldown--;
+			return;
+		}
+
+		Player local = client.getLocalPlayer();
+		if (local == null || currentTarget != null || local.getInteracting() != null)
+		{
+			return;
+		}
+
+		if (config.autoLoot() && lootTicksLeft > 0 && tryLoot(local))
+		{
+			actionCooldown = ACTION_COOLDOWN_TICKS;
+			return;
+		}
+
+		if (config.autoAttack() && nextTarget != null)
+		{
+			attack(nextTarget);
+			actionCooldown = ACTION_COOLDOWN_TICKS;
+		}
+	}
+
+	/**
+	 * Invokes the NPC's "Attack" action through the client's own menu handling.
+	 * The menu slot is looked up from the NPC's action list rather than hard-coded,
+	 * because the "Attack" option is in a different position for different NPCs.
+	 */
+	private void attack(NPC npc)
+	{
+		String[] actions = npc.getComposition().getActions();
+		if (actions == null)
+		{
+			return;
+		}
+		for (int i = 0; i < actions.length && i < NPC_OPTIONS.length; i++)
+		{
+			if ("Attack".equalsIgnoreCase(actions[i]))
+			{
+				client.invokeMenuAction(
+					"Attack",
+					Text.removeTags(String.valueOf(npc.getName())),
+					npc.getIndex(),
+					NPC_OPTIONS[i],
+					0,
+					0);
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Finds the nearest ground item that matches the loot list within the loot radius
+	 * and invokes "Take" on it. Returns true if a click was sent.
+	 */
+	private boolean tryLoot(Player local)
+	{
+		if (lootIds.isEmpty() && lootNames.isEmpty())
+		{
+			return false;
+		}
+
+		WorldView wv = client.getTopLevelWorldView();
+		Scene scene = wv.getScene();
+		Tile[][][] tiles = scene.getTiles();
+		int plane = wv.getPlane();
+
+		int meX = local.getLocalLocation().getSceneX();
+		int meY = local.getLocalLocation().getSceneY();
+		int radius = config.lootRadius();
+
+		TileItem bestItem = null;
+		int bestX = 0;
+		int bestY = 0;
+		int bestDist = Integer.MAX_VALUE;
+
+		Tile[][] plane2d = tiles[plane];
+		for (int x = 0; x < plane2d.length; x++)
+		{
+			Tile[] column = plane2d[x];
+			for (int y = 0; y < column.length; y++)
+			{
+				Tile tile = column[y];
+				if (tile == null)
+				{
+					continue;
+				}
+				int d = Math.max(Math.abs(x - meX), Math.abs(y - meY));
+				if (d > radius || d >= bestDist)
+				{
+					continue;
+				}
+				List<TileItem> items = tile.getGroundItems();
+				if (items == null)
+				{
+					continue;
+				}
+				for (TileItem item : items)
+				{
+					if (isLootItem(item.getId()))
+					{
+						bestItem = item;
+						bestX = x;
+						bestY = y;
+						bestDist = d;
+						break;
+					}
+				}
+			}
+		}
+
+		if (bestItem == null)
+		{
+			return false;
+		}
+
+		client.invokeMenuAction(
+			"Take",
+			itemName(bestItem.getId()),
+			bestItem.getId(),
+			MenuAction.GROUND_ITEM_THIRD_OPTION,
+			bestX,
+			bestY);
+		return true;
+	}
+
+	private boolean isLootItem(int rawId)
+	{
+		int id = itemManager.canonicalize(rawId);
+		if (lootIds.contains(id))
+		{
+			return true;
+		}
+		if (lootNames.isEmpty())
+		{
+			return false;
+		}
+		return lootNames.contains(itemName(id).toLowerCase(Locale.ROOT));
+	}
+
+	private String itemName(int id)
+	{
+		return Text.removeTags(itemManager.getItemComposition(id).getName());
+	}
+
 	// ---------------------------------------------------------------- events
 
 	@Subscribe
@@ -285,6 +500,10 @@ public class AutoFightPlugin extends Plugin
 		{
 			parseIds();
 			clientThread.invoke(this::rescan);
+		}
+		else if (AutoFightConfig.LOOT_ITEMS_KEY.equals(event.getKey()))
+		{
+			parseLoot();
 		}
 		else
 		{
@@ -300,6 +519,8 @@ public class AutoFightPlugin extends Plugin
 			matching.clear();
 			currentTarget = null;
 			nextTarget = null;
+			lootTicksLeft = 0;
+			actionCooldown = 0;
 		}
 	}
 
@@ -346,6 +567,7 @@ public class AutoFightPlugin extends Plugin
 				sessionStart = Instant.now();
 			}
 			kills++;
+			lootTicksLeft = LOOT_WINDOW_TICKS;
 			notifier.notify(config.notifyKill(), "Killed " + Text.removeTags(String.valueOf(npc.getName())) + " (" + kills + ")");
 		}
 	}
@@ -396,6 +618,8 @@ public class AutoFightPlugin extends Plugin
 				lowHpNotified = false;
 			}
 		}
+
+		automate();
 	}
 
 	@Subscribe
