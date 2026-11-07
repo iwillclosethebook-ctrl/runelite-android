@@ -79,6 +79,15 @@ class AutoFightOverlay extends OverlayPanel
 			.rightColor(next != null ? config.nextColor() : Color.GRAY)
 			.build());
 
+		String center = plugin.getCenterLabel();
+		if (center != null)
+		{
+			panelComponent.getChildren().add(LineComponent.builder()
+				.left("Centre")
+				.right(center)
+				.build());
+		}
+
 		return super.render(graphics);
 	}
 

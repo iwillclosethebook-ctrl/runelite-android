@@ -15,6 +15,7 @@ public interface AutoFightConfig extends Config
 	String GROUP = "autofight";
 	String NPC_IDS_KEY = "npcIds";
 	String LOOT_ITEMS_KEY = "lootItems";
+	String CENTER_KEY = "centerTile";
 
 	@ConfigSection(name = "Targets", description = "Which NPCs to highlight", position = 0)
 	String targetsSection = "targets";
@@ -36,6 +37,9 @@ public interface AutoFightConfig extends Config
 
 	@ConfigSection(name = "Camera", description = "Keep the target on screen", position = 6)
 	String cameraSection = "camera";
+
+	@ConfigSection(name = "Hunt range", description = "Limit the search to an area", position = 7)
+	String huntSection = "hunt";
 
 	// ---- Targets ----
 
@@ -344,5 +348,96 @@ public interface AutoFightConfig extends Config
 	default int cameraMargin()
 	{
 		return 20;
+	}
+
+	@Range(min = 1, max = 50)
+	@ConfigItem(
+		keyName = "cameraEveryMin",
+		name = "Turn every (min kills)",
+		description = "Fewest kills between voluntary camera turns. A target fully off screen still pulls the camera.",
+		section = cameraSection,
+		position = 2
+	)
+	default int cameraEveryMin()
+	{
+		return 5;
+	}
+
+	@Range(min = 1, max = 100)
+	@ConfigItem(
+		keyName = "cameraEveryMax",
+		name = "Turn every (max kills)",
+		description = "Most kills between voluntary camera turns. Clamped to at least the minimum.",
+		section = cameraSection,
+		position = 3
+	)
+	default int cameraEveryMax()
+	{
+		return 15;
+	}
+
+	@Range(min = 200, max = 6000)
+	@ConfigItem(
+		keyName = "cameraPanMinMs",
+		name = "Turn time min (ms)",
+		description = "Shortest time a camera turn takes",
+		section = cameraSection,
+		position = 4
+	)
+	default int cameraPanMinMs()
+	{
+		return 900;
+	}
+
+	@Range(min = 200, max = 8000)
+	@ConfigItem(
+		keyName = "cameraPanMaxMs",
+		name = "Turn time max (ms)",
+		description = "Longest time a camera turn takes. Clamped to at least the minimum.",
+		section = cameraSection,
+		position = 5
+	)
+	default int cameraPanMaxMs()
+	{
+		return 2200;
+	}
+
+	// ---- Hunt range ----
+
+	@ConfigItem(
+		keyName = "useHuntRange",
+		name = "Limit to hunt range",
+		description = "Only target NPCs inside a square around the centre tile",
+		section = huntSection,
+		position = 0
+	)
+	default boolean useHuntRange()
+	{
+		return false;
+	}
+
+	@Range(min = 1, max = 25)
+	@ConfigItem(
+		keyName = "huntRadius",
+		name = "Hunt radius (tiles)",
+		description = "Tiles out from the centre tile. 6 gives a 13x13 square.",
+		section = huntSection,
+		position = 1
+	)
+	default int huntRadius()
+	{
+		return 6;
+	}
+
+	@ConfigItem(
+		keyName = CENTER_KEY,
+		name = "Centre tile",
+		description = "x,y,plane of the hunt centre. Leave empty to centre on yourself, or long-press the ground and pick 'AF-Set centre'.",
+		section = huntSection,
+		position = 2
+	)
+	default String centerTile()
+	{
+		return "";
 	}
 }

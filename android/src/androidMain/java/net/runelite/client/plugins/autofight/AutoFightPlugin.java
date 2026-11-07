@@ -33,6 +33,7 @@ import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ActorDeath;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuEntryAdded;
@@ -73,6 +74,8 @@ public class AutoFightPlugin extends Plugin
 {
 	private static final String TAG = "AF-Tag";
 	private static final String UNTAG = "AF-Untag";
+	private static final String SET_CENTER = "AF-Set centre";
+	private static final String CLEAR_CENTER = "AF-Clear centre";
 
 	/** Ticks after a counted kill during which the looter may act. */
 	private static final int LOOT_WINDOW_TICKS = 15;
@@ -85,7 +88,10 @@ public class AutoFightPlugin extends Plugin
 	private static final double JAU14_PER_RADIAN = 16384.0d / (2.0d * Math.PI);
 
 	/** How far off dead centre the camera is allowed to settle, in JAU14. */
-	private static final int CAMERA_JITTER = 450;
+	private static final int CAMERA_REST_JITTER = 350;
+
+	/** Turns smaller than this are not worth animating. */
+	private static final int CAMERA_DEADZONE = 150;
 
 	/** An NPC's action index maps to the matching NPC menu action. */
 	private static final MenuAction[] NPC_OPTIONS = {
@@ -147,7 +153,15 @@ public class AutoFightPlugin extends Plugin
 	private int waitTicks;
 	private NPC pendingTarget;
 	private int pendingTicks;
-	private int cameraCooldown;
+
+	private WorldPoint huntCenter; // null = centre on the player
+
+	private boolean panning;
+	private int panFrom;
+	private int panDelta;
+	private long panStartMs;
+	private int panDurationMs;
+	private int nextCameraKill;
 
 	private final Function<NPC, HighlightedNpc> highlighter = this::highlight;
 
@@ -162,6 +176,8 @@ public class AutoFightPlugin extends Plugin
 	{
 		parseIds();
 		parseLoot();
+		parseCenter();
+		scheduleNextPan();
 		overlayManager.add(overlay);
 		npcOverlayService.registerHighlighter(highlighter);
 		clientThread.invoke(this::rescan);
@@ -228,6 +244,73 @@ public class AutoFightPlugin extends Plugin
 		return npc != null && targetIds.contains(npc.getId());
 	}
 
+	private void parseCenter()
+	{
+		huntCenter = null;
+		String raw = config.centerTile().trim();
+		if (raw.isEmpty())
+		{
+			return;
+		}
+		String[] parts = raw.split("[,\\s]+");
+		if (parts.length < 2)
+		{
+			return;
+		}
+		try
+		{
+			huntCenter = new WorldPoint(
+				Integer.parseInt(parts[0]),
+				Integer.parseInt(parts[1]),
+				parts.length >= 3 ? Integer.parseInt(parts[2]) : 0);
+		}
+		catch (NumberFormatException ignored)
+		{
+			// unparseable; stay centred on the player
+		}
+	}
+
+	private WorldPoint huntCenter(Player local)
+	{
+		if (huntCenter != null)
+		{
+			return huntCenter;
+		}
+		return local == null ? null : local.getWorldLocation();
+	}
+
+	/** Chebyshev distance, so a radius of 6 is the 13x13 square the player sees. */
+	private boolean inHuntRange(NPC npc, WorldPoint center)
+	{
+		if (!config.useHuntRange() || center == null)
+		{
+			return true;
+		}
+		WorldPoint at = npc.getWorldLocation();
+		if (at == null || at.getPlane() != center.getPlane())
+		{
+			return false;
+		}
+		int radius = config.huntRadius();
+		return Math.abs(at.getX() - center.getX()) <= radius
+			&& Math.abs(at.getY() - center.getY()) <= radius;
+	}
+
+	String getCenterLabel()
+	{
+		if (!config.useHuntRange())
+		{
+			return null;
+		}
+		WorldPoint center = huntCenter(client.getLocalPlayer());
+		if (center == null)
+		{
+			return "-";
+		}
+		return (huntCenter == null ? "self" : center.getX() + "," + center.getY())
+			+ " r" + config.huntRadius();
+	}
+
 	/** Rebuilds the matching list from the live scene. Cheap, and cannot go stale. */
 	private void refreshMatching()
 	{
@@ -241,9 +324,10 @@ public class AutoFightPlugin extends Plugin
 		{
 			return;
 		}
+		WorldPoint center = huntCenter(client.getLocalPlayer());
 		for (NPC npc : wv.npcs())
 		{
-			if (matches(npc) && !npcUtil.isDying(npc))
+			if (matches(npc) && !npcUtil.isDying(npc) && inHuntRange(npc, center))
 			{
 				matching.add(npc);
 			}
@@ -263,7 +347,7 @@ public class AutoFightPlugin extends Plugin
 		waitTicks = 0;
 		pendingTarget = null;
 		pendingTicks = 0;
-		cameraCooldown = 0;
+		panning = false;
 	}
 
 	private void updateTargets()
@@ -635,18 +719,14 @@ public class AutoFightPlugin extends Plugin
 	// ---------------------------------------------------------------- camera
 
 	/**
-	 * Turns the camera towards the target only when it has drifted off screen or close to
-	 * the edge, so it does not fight the player for control on every tick.
+	 * Starts a camera turn towards the target, if one is warranted. A target that is fully
+	 * off screen is a functional problem and always pulls the camera; otherwise the camera
+	 * only turns once every few kills, so it is not taken away from the player constantly.
 	 */
-	private void updateCamera()
+	private void maybeStartPan()
 	{
-		if (!config.smartCamera())
+		if (!config.smartCamera() || panning)
 		{
-			return;
-		}
-		if (cameraCooldown > 0)
-		{
-			cameraCooldown--;
 			return;
 		}
 
@@ -659,7 +739,13 @@ public class AutoFightPlugin extends Plugin
 
 		LocalPoint targetPoint = target.getLocalLocation();
 		LocalPoint here = local.getLocalLocation();
-		if (targetPoint == null || here == null || onScreen(targetPoint))
+		if (targetPoint == null || here == null)
+		{
+			return;
+		}
+
+		boolean offScreen = !onScreen(targetPoint);
+		if (!offScreen && kills < nextCameraKill)
 		{
 			return;
 		}
@@ -673,12 +759,78 @@ public class AutoFightPlugin extends Plugin
 
 		// Perspective projects with x1 = x*cos(yaw) + y*sin(yaw); x1 is the horizontal
 		// screen axis, so the target is centred when yaw = atan2(-dx, dy).
-		double radians = Math.atan2(-dx, dy);
-		int yaw = (int) Math.round(radians * JAU14_PER_RADIAN);
-		yaw += random.nextInt(2 * CAMERA_JITTER + 1) - CAMERA_JITTER;
+		int goal = (int) Math.round(Math.atan2(-dx, dy) * JAU14_PER_RADIAN);
+		goal += random.nextInt(2 * CAMERA_REST_JITTER + 1) - CAMERA_REST_JITTER;
 
+		int from = client.getCameraYawTarget() & JAU14_MASK;
+		int half = (JAU14_MASK + 1) / 2;
+		int delta = Math.floorMod(goal - from + half, JAU14_MASK + 1) - half;
+		if (Math.abs(delta) < CAMERA_DEADZONE)
+		{
+			scheduleNextPan();
+			return;
+		}
+
+		int min = Math.max(config.cameraPanMinMs(), 1);
+		int max = Math.max(config.cameraPanMaxMs(), min);
+		// Bigger turns take longer, and the exact duration varies within the configured range.
+		double share = Math.min(Math.abs(delta) / (double) half, 1.0d);
+		double spread = 0.35d + 0.65d * share;
+		panDurationMs = Math.max((int) (min + (max - min) * spread), min);
+
+		panFrom = from;
+		panDelta = delta;
+		panStartMs = System.currentTimeMillis();
+		panning = true;
+		scheduleNextPan();
+	}
+
+	private void scheduleNextPan()
+	{
+		int min = Math.max(config.cameraEveryMin(), 1);
+		int max = Math.max(config.cameraEveryMax(), min);
+		nextCameraKill = kills + min + (max > min ? random.nextInt(max - min + 1) : 0);
+	}
+
+	/**
+	 * Cubic ease-in-out. The turn leaves slowly, accelerates through the middle and settles
+	 * at the end rather than stopping dead, which is what setting the yaw target in one go
+	 * looks like.
+	 */
+	private static double ease(double p)
+	{
+		return p < 0.5d
+			? 4.0d * p * p * p
+			: 1.0d - Math.pow(-2.0d * p + 2.0d, 3.0d) / 2.0d;
+	}
+
+	/**
+	 * Client ticks run at frame rate rather than the 600ms game tick, so the turn is stepped
+	 * here. Driving it from onGameTick would give a pan two or three visible steps.
+	 */
+	@Subscribe
+	public void onClientTick(ClientTick tick)
+	{
+		if (!panning)
+		{
+			return;
+		}
+		if (!config.smartCamera() || panDurationMs <= 0)
+		{
+			panning = false;
+			return;
+		}
+
+		double progress = (System.currentTimeMillis() - panStartMs) / (double) panDurationMs;
+		if (progress >= 1.0d)
+		{
+			client.setCameraYawTarget((panFrom + panDelta) & JAU14_MASK);
+			panning = false;
+			return;
+		}
+
+		int yaw = (int) Math.round(panFrom + panDelta * ease(progress));
 		client.setCameraYawTarget(yaw & JAU14_MASK);
-		cameraCooldown = 2 + random.nextInt(3);
 	}
 
 	/** True when the point projects comfortably inside the viewport. */
@@ -727,6 +879,11 @@ public class AutoFightPlugin extends Plugin
 		else if (AutoFightConfig.LOOT_ITEMS_KEY.equals(event.getKey()))
 		{
 			parseLoot();
+		}
+		else if (AutoFightConfig.CENTER_KEY.equals(event.getKey()))
+		{
+			parseCenter();
+			clientThread.invoke(this::rescan);
 		}
 		else
 		{
@@ -858,7 +1015,7 @@ public class AutoFightPlugin extends Plugin
 		}
 
 		automate();
-		updateCamera();
+		maybeStartPan();
 	}
 
 	@Subscribe
@@ -868,6 +1025,7 @@ public class AutoFightPlugin extends Plugin
 		NPC npc = entry.getNpc();
 		if (npc == null)
 		{
+			addCenterEntries(entry);
 			return;
 		}
 
@@ -887,6 +1045,47 @@ public class AutoFightPlugin extends Plugin
 				.setType(MenuAction.RUNELITE)
 				.onClick(e -> toggleTag(npc.getId()));
 		}
+	}
+
+	/** Lets the player long-press the ground and mark the centre of the hunt area. */
+	private void addCenterEntries(MenuEntry entry)
+	{
+		if (!config.useHuntRange() || entry.getType() != MenuAction.WALK)
+		{
+			return;
+		}
+		WorldView wv = client.getTopLevelWorldView();
+		if (wv == null)
+		{
+			return;
+		}
+		final WorldPoint point = WorldPoint.fromScene(wv, entry.getParam0(), entry.getParam1(), wv.getPlane());
+		if (point == null)
+		{
+			return;
+		}
+
+		client.createMenuEntry(-1)
+			.setOption(SET_CENTER)
+			.setTarget("")
+			.setType(MenuAction.RUNELITE)
+			.onClick(e -> setCenter(point));
+
+		if (huntCenter != null)
+		{
+			client.createMenuEntry(-1)
+				.setOption(CLEAR_CENTER)
+				.setTarget("")
+				.setType(MenuAction.RUNELITE)
+				.onClick(e -> setCenter(null));
+		}
+	}
+
+	private void setCenter(WorldPoint point)
+	{
+		configManager.setConfiguration(AutoFightConfig.GROUP, AutoFightConfig.CENTER_KEY,
+			point == null ? "" : point.getX() + "," + point.getY() + "," + point.getPlane());
+		// ConfigChanged will reparse and rescan.
 	}
 
 	private void toggleTag(int id)
