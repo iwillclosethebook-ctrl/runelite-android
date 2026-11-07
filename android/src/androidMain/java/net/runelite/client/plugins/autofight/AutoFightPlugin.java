@@ -97,8 +97,15 @@ import net.runelite.client.util.Text;
  *       correction tap hits the target, like a player noticing their slip.</li>
  *   <li>When "Attack" is not the NPC's left-click option — or the active style prefers
  *       menus — the engine long-presses (BUTTON3 burst at the driver's long-press
- *       timeout), reads where the client drew the "Attack" row, drags the cursor along a
- *       soft bezier to it (the hover trail that highlights rows) and clicks it.</li>
+ *       timeout), reads where the client drew the "Attack" row, drags the cursor to it
+ *       along a randomized sine-wave path (the hover trail that highlights rows) and
+ *       clicks it.</li>
+ *   <li>Every travelled path — drags, approach trails, even the micro-wobble while the
+ *       finger is pressed — is built from trigonometric curves: a sine ripple across the
+ *       line of travel, a faster cosine tremor, and a cosine swell along it, all with
+ *       amplitudes, frequencies and phases rolled fresh per gesture. Idle wander is a
+ *       Lissajous figure (cos on x, sin on y, detuned frequency ratio) that never closes
+ *       on itself and never repeats.</li>
  *   <li>The whole behaviour is steered by a rotating "input style" (persona): tap
  *       placement strategy, reaction padding, press duration, misclick rate and menu
  *       preference all change together every few minutes, so the fingerprint of the
@@ -1571,7 +1578,15 @@ public class AutoFightPlugin extends Plugin
                         return true;
                 }
 
-                /** Idle finger drift while waiting on a kill: pure hover moves, no clicks. */
+                /**
+                 * Idle finger drift while waiting on a kill: pure hover moves, no clicks.
+                 * The cursor traces Lissajous figures — a cosine oscillator on x and a sine
+                 * oscillator on y, with random amplitudes, random phases and a frequency
+                 * ratio drawn from near-simple fractions (1:1, 1:2, 2:3, …) plus a small
+                 * detune. The detune stops the figure from ever closing on itself, so the
+                 * wander looks smooth and curving yet never repeats: two trigonometric
+                 * oscillators and a handful of random numbers make every drift unique.
+                 */
                 void hoverDrift()
                 {
                         if (!running || busy || hovering || lastX < 0 || client.isMenuOpen())
@@ -1586,22 +1601,45 @@ public class AutoFightPlugin extends Plugin
                                 {
                                         try
                                         {
-                                                int x = lastX;
-                                                int y = lastY;
-                                                int n = 1 + random.nextInt(3);
-                                                for (int i = 0; i < n && !aborted(gen); i++)
+                                                int cx = lastX;
+                                                int cy = lastY;
+                                                int w = canvasWidth();
+                                                int h = canvasHeight();
+                                                if (w <= 0 || h <= 0)
                                                 {
-                                                        if (!sleep(40 + random.nextInt(60)))
+                                                        return;
+                                                }
+
+                                                // Random harmonics for this drift.
+                                                int[] ratios = {1, 2, 3};
+                                                double base = ratios[random.nextInt(ratios.length)];
+                                                double detune = 0.05d + random.nextDouble() * 0.14d;
+                                                double fy = base + (random.nextBoolean() ? detune : -detune);
+
+                                                double ax = 16.0d + random.nextDouble() * 46.0d;
+                                                double ay = 12.0d + random.nextDouble() * 38.0d;
+                                                double phx = random.nextDouble() * 2.0d * Math.PI;
+                                                double phy = random.nextDouble() * 2.0d * Math.PI;
+
+                                                double periodMs = 900.0d + random.nextDouble() * 1700.0d;
+                                                double omega = 2.0d * Math.PI / periodMs;
+                                                long duration = 1200L + random.nextInt(2600);
+                                                long t0 = System.currentTimeMillis();
+
+                                                while (System.currentTimeMillis() - t0 < duration && !aborted(gen))
+                                                {
+                                                        if (!sleep(40 + random.nextInt(50)))
                                                         {
                                                                 return;
                                                         }
-                                                        int nx = Math.max(4, Math.min(canvasWidth() - 5, x + signedJitter(34)));
-                                                        int ny = Math.max(4, Math.min(canvasHeight() - 5, y + signedJitter(34)));
-                                                        x = nx;
-                                                        y = ny;
-                                                        if (!MobileHitTest.isInterfaceAt(nx, ny))
+                                                        double t = System.currentTimeMillis() - t0;
+                                                        double x = cx + ax * Math.cos(omega * t + phx);
+                                                        double y = cy + ay * Math.sin(fy * omega * t + phy);
+                                                        int ix = Math.max(4, Math.min(w - 5, (int) Math.round(x)));
+                                                        int iy = Math.max(4, Math.min(h - 5, (int) Math.round(y)));
+                                                        if (!MobileHitTest.isInterfaceAt(ix, iy))
                                                         {
-                                                                emitMove(gen, nx, ny);
+                                                                emitMove(gen, ix, iy);
                                                         }
                                                 }
                                         }
@@ -1720,9 +1758,15 @@ public class AutoFightPlugin extends Plugin
                                 emitMove(gen, fingerDown[0], fingerDown[1]);
 
                                 long pressStart = System.currentTimeMillis();
-                                // Micro drift while the finger is pressed (30% of taps).
+                                // Micro drift while the finger is pressed (30% of taps): a tiny
+                                // two-axis sine/cosine wobble, well under the driver's drag slop.
                                 if (random.nextInt(100) < 30)
                                 {
+                                        double ampX = 1.2d + random.nextDouble() * 2.2d;
+                                        double ampY = 1.2d + random.nextDouble() * 2.2d;
+                                        double freqX = 0.7d + random.nextDouble() * 1.3d;
+                                        double freqY = 0.7d + random.nextDouble() * 1.3d;
+                                        double phase = random.nextDouble() * 2.0d * Math.PI;
                                         int n = 1 + random.nextInt(3);
                                         for (int i = 0; i < n && !aborted(gen); i++)
                                         {
@@ -1730,7 +1774,10 @@ public class AutoFightPlugin extends Plugin
                                                 {
                                                         return;
                                                 }
-                                                emitMove(gen, fingerDown[0] + signedJitter(4), fingerDown[1] + signedJitter(4));
+                                                double t = (i + 1) * 0.4d;
+                                                int mx = fingerDown[0] + (int) Math.round(ampX * Math.sin(2.0d * Math.PI * freqX * t + phase));
+                                                int my = fingerDown[1] + (int) Math.round(ampY * Math.cos(2.0d * Math.PI * freqY * t + phase * 1.618d));
+                                                emitMove(gen, mx, my);
                                         }
                                         if (aborted(gen))
                                         {
@@ -1882,6 +1929,10 @@ public class AutoFightPlugin extends Plugin
                         emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
                         lastX = row[0];
                         lastY = row[1];
+                        if (config.logInput())
+                        {
+                                Log.i(LOG_TAG, "menu-walk: clicked the Attack row at " + row[0] + "," + row[1]);
+                        }
                 }
 
                 /** Taps away an open context menu before doing anything else. */
@@ -1901,7 +1952,10 @@ public class AutoFightPlugin extends Plugin
                         return !aborted(gen) && sleep(160 + random.nextInt(240));
                 }
 
-                /** Light finger slide toward the tap point: pure hover moves before the press. */
+                /**
+                 * Light finger slide toward the tap point: pure hover moves before the press,
+                 * riding a randomized sine-wave path (see {@link #harmonicPath}).
+                 */
                 private void approachTrail(int gen, int toX, int toY)
                 {
                         double dist = Math.hypot(toX - lastX, toY - lastY);
@@ -1909,64 +1963,74 @@ public class AutoFightPlugin extends Plugin
                         {
                                 return;
                         }
-                        int steps = 2 + random.nextInt(4);
-                        double bow = (0.1d + random.nextDouble() * 0.25d) * dist * (random.nextBoolean() ? 1 : -1);
-                        double mx = (lastX + toX) / 2.0d;
-                        double my = (lastY + toY) / 2.0d;
-                        double nx = -(toY - lastY) / dist;
-                        double ny = (toX - lastX) / dist;
-                        double cx = mx + nx * bow;
-                        double cy = my + ny * bow;
-                        double x0 = lastX;
-                        double y0 = lastY;
-                        for (int i = 1; i <= steps; i++)
-                        {
-                                if (aborted(gen) || !sleep(35 + random.nextInt(55)))
-                                {
-                                        return;
-                                }
-                                double t = i / (double) steps;
-                                double x = quad(x0, cx, toX, t) + signedJitter(2);
-                                double y = quad(y0, cy, toY, t) + signedJitter(2);
-                                emitMove(gen, (int) Math.round(x), (int) Math.round(y));
-                        }
+                        harmonicPath(gen, lastX, lastY, toX, toY, 160 + random.nextInt(300));
                 }
 
-                /** Drag path from one point to another along a slightly bowed curve. */
+                /** Drag path from one point to another along a randomized harmonic curve. */
                 private void dragTo(int gen, int[] from, int[] to, int durationMs)
                 {
-                        double dist = Math.hypot(to[0] - from[0], to[1] - from[1]);
+                        harmonicPath(gen, from[0], from[1], to[0], to[1], durationMs);
+                }
+
+                /**
+                 * Harmonic finger path from (x0, y0) to (x1, y1): a straight baseline eased
+                 * with smoothstep, plus randomized trigonometric components — a sine ripple
+                 * perpendicular to the line of travel (the finger wobbling across its
+                 * course), a finer, faster cosine tremor layered on top, and a cosine swell
+                 * along the direction of travel (the finger advancing and hesitating).
+                 * Amplitude, frequency and phase of every component are rolled fresh for
+                 * each gesture, so no two gestures ever trace the same curve; the sine
+                 * window fades the wobble to zero at both endpoints so the finger leaves
+                 * and arrives exactly on target.
+                 */
+                private void harmonicPath(int gen, double x0, double y0, double x1, double y1, int durationMs)
+                {
+                        double dx = x1 - x0;
+                        double dy = y1 - y0;
+                        double dist = Math.hypot(dx, dy);
                         if (dist < 3)
                         {
                                 return;
                         }
-                        double bow = (0.08d + random.nextDouble() * 0.18d) * dist * (random.nextBoolean() ? 1 : -1);
-                        double mx = (from[0] + to[0]) / 2.0d;
-                        double my = (from[1] + to[1]) / 2.0d;
-                        double nx = -(to[1] - from[1]) / dist;
-                        double ny = (to[0] - from[0]) / dist;
-                        double cx = mx + nx * bow;
-                        double cy = my + ny * bow;
+                        double ux = dx / dist;
+                        double uy = dy / dist;
+                        double px = -uy; // perpendicular unit vector
+                        double py = ux;
 
-                        int steps = Math.max(3, Math.min(28, (int) Math.round(dist / 14.0d)));
-                        double stepDur = durationMs / (double) steps;
+                        // Random harmonics for this gesture.
+                        double rippleAmp = (0.05d + random.nextDouble() * 0.09d) * dist;
+                        double rippleCycles = 0.6d + random.nextDouble() * 1.9d;
+                        double ripplePhase = random.nextDouble() * 2.0d * Math.PI;
+                        double tremorAmp = (0.012d + random.nextDouble() * 0.035d) * dist;
+                        double tremorCycles = rippleCycles * (2.5d + random.nextDouble() * 2.5d);
+                        double tremorPhase = random.nextDouble() * 2.0d * Math.PI;
+                        double swellAmp = (0.03d + random.nextDouble() * 0.06d) * dist;
+                        double swellCycles = 0.5d + random.nextDouble() * 1.1d;
+                        double swellPhase = random.nextDouble() * 2.0d * Math.PI;
+
+                        int steps = Math.max(4, Math.min(34, (int) Math.round(dist / 11.0d)));
+                        double stepDur = Math.max(9.0d, durationMs / (double) steps);
                         for (int i = 1; i <= steps; i++)
                         {
-                                if (aborted(gen) || !sleep((int) stepDur + (random.nextBoolean() ? 1 : 0)))
+                                if (aborted(gen) || !sleep((int) stepDur + random.nextInt(3)))
                                 {
                                         return;
                                 }
                                 double t = i / (double) steps;
                                 double u = t * t * (3.0d - 2.0d * t); // smoothstep: slow, fast, settle
-                                double x = quad(from[0], cx, to[0], u) + signedJitter(2);
-                                double y = quad(from[1], cy, to[1], u) + signedJitter(2);
+                                double window = Math.sin(Math.PI * t); // wobble fades at both ends
+                                double cross = rippleAmp * Math.sin(2.0d * Math.PI * rippleCycles * t + ripplePhase) * window
+                                        + tremorAmp * Math.cos(2.0d * Math.PI * tremorCycles * t + tremorPhase) * window;
+                                double swell = swellAmp * Math.cos(2.0d * Math.PI * swellCycles * t + swellPhase) * window;
+                                double x = x0 + dx * u + px * cross + ux * swell;
+                                double y = y0 + dy * u + py * cross + uy * swell;
                                 emitMove(gen, (int) Math.round(x), (int) Math.round(y));
                         }
                         if (!sleep(14 + random.nextInt(20)) || aborted(gen))
                         {
                                 return;
                         }
-                        emitMove(gen, to[0], to[1]);
+                        emitMove(gen, (int) Math.round(x1), (int) Math.round(y1));
                 }
 
                 /**
@@ -2813,12 +2877,20 @@ public class AutoFightPlugin extends Plugin
                 }
 
                 int headerH = (int) Math.round(MENU_HEADER_HEIGHT * f[1]);
+                // The entries array is stored bottom-to-top: array index 0 is the LAST row
+                // drawn at the bottom of the menu, and the row directly under the header is
+                // length-1. The client's own hit test maps "row from top" r to array index
+                // length-1-r (cf. InteractHighlightOverlay.hoveredMenuEntry). Convert before
+                // positioning, or the drag aims at the vertically mirrored row — sweeping
+                // over every option on the way down and clicking "Cancel" instead of
+                // "Attack".
+                int rowFromTop = entries.length - 1 - idx;
                 int rowH = (menuH - headerH) / entries.length;
                 if (rowH <= 0)
                 {
-                        rowH = 16;
+                        rowH = Math.max(12, (int) Math.round(15 * f[1]));
                 }
-                int rowY = menuY + headerH + rowH * idx + rowH / 2 + signedJitter(Math.max(2, rowH / 6));
+                int rowY = menuY + headerH + rowH * rowFromTop + rowH / 2 + signedJitter(Math.max(2, rowH / 6));
                 int rowX = menuX + (int) (menuW * (0.42d + random.nextDouble() * 0.18d));
 
                 if (!MobileHitTest.isMenuOptionAt(rowX, rowY))
@@ -2943,12 +3015,6 @@ public class AutoFightPlugin extends Plugin
         private int signedJitter(int px)
         {
                 return px <= 0 ? 0 : random.nextInt(2 * px + 1) - px;
-        }
-
-        private static double quad(double a, double c, double b, double t)
-        {
-                double u = 1.0d - t;
-                return u * u * a + 2.0d * u * t * c + t * t * b;
         }
 
         // ---------------------------------------------------------------- overlay accessors
