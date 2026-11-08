@@ -30,7 +30,8 @@ import net.runelite.client.util.ColorUtil;
 @PluginDescriptor(
         name = "Mobile Dev Tools",
         description = "Draw IDs of NPCs, objects, ground items, projectiles, graphics objects and tiles right in the world, with long-press toggles",
-        tags = {"debug", "dev", "ids", "tiles", "projectiles", "mobile"}
+        tags = {"debug", "dev", "ids", "tiles", "projectiles", "mobile"},
+        enabledByDefault = false
 )
 public class MobileDevToolsPlugin extends Plugin
 {

@@ -162,6 +162,20 @@ public interface AutoFishConfig extends Config
                 return Notification.ON;
         }
 
+        @ConfigItem(
+                keyName = "shiftDrop",
+                name = "Shift-drop",
+                description = "Hold shift and tap each item once instead of long-press + 'Drop'. Much faster; items "
+                        + "are tapped along a fresh sine wave through the bag every pass. Needs the in-game setting "
+                        + "'Shift click to drop items' turned on. Turn off to fall back to long-press dropping.",
+                section = fullSection,
+                position = 4
+        )
+        default boolean shiftDrop()
+        {
+                return true;
+        }
+
         // ---- Style ----
 
         @ConfigItem(keyName = "hull", name = "Hull", description = "Highlight the spot's clickbox hull", section = styleSection, position = 0)

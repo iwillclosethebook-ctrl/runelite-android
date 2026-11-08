@@ -134,7 +134,8 @@ import net.runelite.client.util.Text;
 @PluginDescriptor(
         name = "AutoFight",
         description = "Highlight NPCs, count kills, and auto-attack/auto-loot with simulated touch input and humanized camera turns",
-        tags = {"npc", "highlight", "indicators", "combat", "kill", "counter", "mobile", "id", "loot", "attack", "camera", "humanizer"}
+        tags = {"npc", "highlight", "indicators", "combat", "kill", "counter", "mobile", "id", "loot", "attack", "camera", "humanizer"},
+        enabledByDefault = false
 )
 public class AutoFightPlugin extends Plugin
 {

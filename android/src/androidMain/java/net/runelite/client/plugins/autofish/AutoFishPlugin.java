@@ -70,6 +70,7 @@ import net.runelite.client.plugins.mobile.MobileInventoryOverlay;
 import net.runelite.client.plugins.mobile.MobileScrollbars;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.Text;
+import net.runelite.mp.ui.bridge.ModifierState;
 
 /**
  * Highlights fishing spots, counts catches, and optionally auto-fishes and auto-drops
@@ -129,7 +130,8 @@ import net.runelite.client.util.Text;
 @PluginDescriptor(
         name = "AutoFish",
         description = "Highlight fishing spots, count catches, and auto-fish/auto-drop with simulated touch input and humanized camera turns",
-        tags = {"fishing", "spot", "highlight", "counter", "mobile", "id", "drop", "camera", "humanizer"}
+        tags = {"fishing", "spot", "highlight", "counter", "mobile", "id", "drop", "camera", "humanizer"},
+        enabledByDefault = false
 )
 public class AutoFishPlugin extends Plugin
 {
@@ -217,6 +219,15 @@ public class AutoFishPlugin extends Plugin
         private int idleCount;
         private boolean idleNotified;
         private boolean fullNotified;
+        /**
+         * True from the moment the inventory fills until nothing droppable is left. Keeps
+         * the drop loop going after the first items vanish (which un-fills the inventory)
+         * so the whole bag is emptied before fishing resumes.
+         */
+        private boolean dropping;
+        /** Droppable count at the previous pass and how many passes in a row made no progress. */
+        private int lastDropCount = -1;
+        private int stalledDropPasses;
 
         private int waitTicks;
         private NPC pendingSpot;
@@ -617,6 +628,9 @@ public class AutoFishPlugin extends Plugin
                 pendingTicks = 0;
                 lastSpot = null;
                 pendingAttempts = 0;
+                dropping = false;
+                lastDropCount = -1;
+                stalledDropPasses = 0;
         }
 
         private void updateSpots()
@@ -906,12 +920,22 @@ public class AutoFishPlugin extends Plugin
                         return;
                 }
 
-                if (inventoryFull())
+                boolean full = inventoryFull();
+                if (full && config.fullInvMode() != AutoFishConfig.FullInventoryMode.OFF)
+                {
+                        dropping = true;
+                }
+                if (config.fullInvMode() == AutoFishConfig.FullInventoryMode.OFF)
+                {
+                        dropping = false;
+                }
+
+                if (full || dropping)
                 {
                         pendingSpot = null;
                         pendingTicks = 0;
 
-                        if (config.fullInvMode() == AutoFishConfig.FullInventoryMode.OFF)
+                        if (!dropping)
                         {
                                 if (!fullNotified)
                                 {
@@ -921,10 +945,20 @@ public class AutoFishPlugin extends Plugin
                                 return;
                         }
 
-                        if (!touch.isBusy())
+                        if (touch.isBusy())
                         {
-                                List<DropTarget> plan = buildDropPlan();
-                                if (plan.isEmpty())
+                                return;
+                        }
+
+                        // Every droppable item still in the bag, in this pass's wave order. Keep
+                        // making passes until nothing is left; only then go back to fishing.
+                        List<DropTarget> plan = buildDropPlan();
+                        if (plan.isEmpty())
+                        {
+                                dropping = false;
+                                lastDropCount = -1;
+                                stalledDropPasses = 0;
+                                if (full)
                                 {
                                         if (!fullNotified)
                                         {
@@ -933,16 +967,23 @@ public class AutoFishPlugin extends Plugin
                                         }
                                         return;
                                 }
-                                if (touch.drops(plan))
-                                {
-                                        waitTicks = 1 + random.nextInt(2);
-                                }
-                                else
-                                {
-                                        waitTicks = 1;
-                                }
+                                // Bag emptied: fall through and fish straight away.
                         }
-                        return;
+                        else
+                        {
+                                // Two passes in a row that dropped nothing means shift-click drop is
+                                // probably off in the game settings: fall back to long-press drops.
+                                stalledDropPasses = plan.size() >= lastDropCount && lastDropCount >= 0 ? stalledDropPasses + 1 : 0;
+                                lastDropCount = plan.size();
+                                boolean useShift = config.shiftDrop() && stalledDropPasses < 2;
+                                if (config.shiftDrop() && !useShift && config.logInput())
+                                {
+                                        Log.w(LOG_TAG, "shift-drop made no progress; using long-press drops (is 'Shift click to drop items' on?)");
+                                }
+                                boolean scheduled = useShift ? touch.shiftDrops(plan) : touch.drops(plan);
+                                waitTicks = scheduled ? random.nextInt(2) : 1;
+                                return;
+                        }
                 }
                 fullNotified = false;
 
@@ -1092,8 +1133,9 @@ public class AutoFishPlugin extends Plugin
                 }
 
                 List<DropTarget> plan = new ArrayList<>();
-                for (Widget child : children)
+                for (int slot = 0; slot < children.length; slot++)
                 {
+                        Widget child = children[slot];
                         if (child == null)
                         {
                                 continue;
@@ -1134,15 +1176,53 @@ public class AutoFishPlugin extends Plugin
                         }
                         // Note: no interface hit-test here — the inventory is exactly the interface
                         // we are supposed to tap.
-                        plan.add(new DropTarget(s[0], s[1], itemName(itemId)));
+                        plan.add(new DropTarget(s[0], s[1], itemName(itemId), slot));
                 }
 
-                if (plan.isEmpty())
+                if (plan.size() > 1)
                 {
-                        return plan;
+                        waveOrder(plan);
                 }
-                int batch = Math.min(plan.size(), 2 + random.nextInt(3));
-                return new ArrayList<>(plan.subList(0, batch));
+                return plan;
+        }
+
+        private static final int INV_COLUMNS = 4;
+
+        /**
+         * Orders a drop pass along a sine wave laid over the 4x7 inventory grid. Each pass
+         * rolls a fresh wave: k in 1..8 sets how many half-oscillations fit across the
+         * sweep, plus a random amplitude, phase, sweep axis and sweep direction. Slots are
+         * sorted by (sweep position + amplitude * sin(k * pi * cross position + phase)),
+         * so the finger snakes through the bag in a smooth, repeatable-looking curve whose
+         * shape never repeats from one pass to the next. Each target also gets its wave
+         * value stored so the tap rhythm can ride the same curve.
+         */
+        private void waveOrder(List<DropTarget> plan)
+        {
+                final int k = 1 + random.nextInt(8);
+                final double amp = 0.35d + random.nextDouble() * (0.6d + k * 0.18d);
+                final double phase = random.nextDouble() * Math.PI * 2d;
+                final boolean byColumns = random.nextBoolean();
+                final boolean reverse = random.nextInt(4) == 0;
+                final double rows = 7d;
+                final double cols = INV_COLUMNS;
+
+                for (DropTarget t : plan)
+                {
+                        int row = t.slot / INV_COLUMNS;
+                        int col = t.slot % INV_COLUMNS;
+                        double sweep = byColumns ? col : row;
+                        double cross = byColumns ? row / (rows - 1d) : col / (cols - 1d);
+                        double wave = Math.sin(k * Math.PI * cross + phase);
+                        t.wave = wave;
+                        t.key = (reverse ? -sweep : sweep) + amp * wave + cross * 0.001d;
+                }
+                plan.sort((a, b) -> Double.compare(a.key, b.key));
+                if (config.logInput())
+                {
+                        Log.i(LOG_TAG, String.format(Locale.ROOT, "drop wave: k=%d amp=%.2f phase=%.2f %s%s",
+                                k, amp, phase, byColumns ? "columns" : "rows", reverse ? " reversed" : ""));
+                }
         }
 
         private boolean isDroppableItem(int rawId)
@@ -1518,12 +1598,17 @@ public class AutoFishPlugin extends Plugin
                 final int x;
                 final int y;
                 final String label;
+                final int slot;
+                /** Wave value (-1..1) at this slot for the current pass; drives the tap rhythm. */
+                double wave;
+                double key;
 
-                DropTarget(int x, int y, String label)
+                DropTarget(int x, int y, String label, int slot)
                 {
                         this.x = x;
                         this.y = y;
                         this.label = label;
+                        this.slot = slot;
                 }
         }
 
@@ -1757,6 +1842,51 @@ public class AutoFishPlugin extends Plugin
                 }
 
                 /**
+                 * Shift-drops a whole pass of inventory items: hold shift, then quick single
+                 * taps on each slot in the pass's wave order, then let go of shift. Needs the
+                 * in-game "Shift click to drop items" setting.
+                 *
+                 * @return true when a gesture was scheduled
+                 */
+                boolean shiftDrops(List<DropTarget> targets)
+                {
+                        if (!running || busy || persona == null || targets == null || targets.isEmpty())
+                        {
+                                return false;
+                        }
+                        if (client.getGameState() != GameState.LOGGED_IN)
+                        {
+                                return false;
+                        }
+                        int[] dismiss = currentMenuDismissPoint();
+                        if (client.isMenuOpen() && dismiss == null)
+                        {
+                                return false;
+                        }
+
+                        final int gen = ++generation;
+                        final Persona style = persona;
+                        final List<DropTarget> batch = new ArrayList<>(targets);
+                        final int[] dismissPoint = dismiss;
+
+                        busy = true;
+                        if (config.logInput())
+                        {
+                                Log.i(LOG_TAG, "shift-drop pass: " + batch.size() + " items");
+                        }
+                        try
+                        {
+                                timeline.execute(() -> runShiftDrops(gen, style, batch, dismissPoint));
+                        }
+                        catch (RuntimeException rejected)
+                        {
+                                busy = false;
+                                return false;
+                        }
+                        return true;
+                }
+
+                /**
                  * Idle finger drift while waiting on a catch: pure hover moves, no clicks.
                  * The cursor traces Lissajous figures — a cosine oscillator on x and a sine
                  * oscillator on y, with random amplitudes, random phases and a frequency
@@ -1974,6 +2104,115 @@ public class AutoFishPlugin extends Plugin
                         {
                                 busy = false;
                         }
+                }
+
+                /**
+                 * One shift-drop pass. The gap between taps rides the same wave the order was
+                 * built from (fast through the troughs, a touch slower over the crests) with a
+                 * little jitter on top, so the rhythm is quick but never metronomic.
+                 */
+                private void runShiftDrops(int gen, Persona p, List<DropTarget> targets, int[] dismiss)
+                {
+                        boolean pressedShift = false;
+                        try
+                        {
+                                if (dismiss != null && !dismissMenu(gen, dismiss))
+                                {
+                                        return;
+                                }
+                                pressedShift = setShift(true);
+                                if (!sleep(70 + random.nextInt(90)) || aborted(gen))
+                                {
+                                        return;
+                                }
+
+                                final double base = 55d + random.nextInt(30);
+                                final double swing = 25d + random.nextInt(45);
+                                for (DropTarget target : targets)
+                                {
+                                        if (aborted(gen))
+                                        {
+                                                return;
+                                        }
+                                        emitMove(gen, target.x, target.y);
+                                        if (!sleep(4 + random.nextInt(10)) || aborted(gen))
+                                        {
+                                                return;
+                                        }
+                                        emitMove(gen, target.x, target.y);
+                                        if (!sleep(18 + random.nextInt(30)) || aborted(gen))
+                                        {
+                                                return;
+                                        }
+                                        emitBurst(gen, target.x, target.y, MouseEvent.BUTTON1);
+                                        if (config.logInput())
+                                        {
+                                                Log.i(LOG_TAG, "shift-drop: slot " + target.slot + " " + target.label);
+                                        }
+
+                                        int gap = (int) Math.round(base + swing * (target.wave + 1d) / 2d) + random.nextInt(25);
+                                        if (random.nextInt(100) < 4)
+                                        {
+                                                gap += 80 + random.nextInt(160); // the odd thumb re-grip
+                                        }
+                                        if (!sleep(gap))
+                                        {
+                                                return;
+                                        }
+                                }
+                                // Let the last tap land before shift comes up.
+                                sleep(60 + random.nextInt(80));
+                        }
+                        finally
+                        {
+                                if (pressedShift)
+                                {
+                                        setShift(false);
+                                }
+                                busy = false;
+                        }
+                }
+
+                /**
+                 * Engages or releases shift through the same sticky modifier the on-screen
+                 * Shift chip uses (it keeps the key held with a heartbeat). Only touches it when
+                 * the state actually needs to change.
+                 *
+                 * @return true when this call changed the shift state
+                 */
+                private boolean setShift(boolean down)
+                {
+                        CountDownLatch done = new CountDownLatch(1);
+                        boolean[] changed = {false};
+                        new Handler(Looper.getMainLooper()).post(() ->
+                        {
+                                try
+                                {
+                                        boolean active = Boolean.TRUE.equals(ModifierState.INSTANCE.getShiftActive().getValue());
+                                        if (active != down)
+                                        {
+                                                ModifierState.INSTANCE.toggleShift();
+                                                changed[0] = true;
+                                        }
+                                }
+                                catch (RuntimeException e)
+                                {
+                                        Log.w(LOG_TAG, "could not change shift state", e);
+                                }
+                                finally
+                                {
+                                        done.countDown();
+                                }
+                        });
+                        try
+                        {
+                                done.await(500, TimeUnit.MILLISECONDS);
+                        }
+                        catch (InterruptedException e)
+                        {
+                                Thread.currentThread().interrupt();
+                        }
+                        return changed[0];
                 }
 
                 /**
