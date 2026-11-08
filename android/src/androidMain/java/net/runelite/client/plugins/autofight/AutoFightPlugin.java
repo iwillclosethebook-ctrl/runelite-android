@@ -225,6 +225,8 @@ public class AutoFightPlugin extends Plugin
 
         private int lootTicksLeft;
         private int waitTicks;
+        /** Set when a tap visibly did nothing; the next attempt goes out at once with a short pad. */
+        private boolean missNoticed;
         private NPC pendingTarget;
         private int pendingTicks;
         private NPC lastVictim;
@@ -814,9 +816,15 @@ public class AutoFightPlugin extends Plugin
                 if (pendingTarget != null)
                 {
                         pendingTicks++;
-                        if (pendingTicks < ATTACK_WAIT_TICKS && matching.contains(pendingTarget))
+                        if (pendingTicks < ATTACK_WAIT_TICKS && !tapMissed(local) && matching.contains(pendingTarget))
                         {
                                 return;
+                        }
+                        if (pendingTicks < ATTACK_WAIT_TICKS)
+                        {
+                                // Noticed the tap did nothing: fix it straight away.
+                                missNoticed = true;
+                                waitTicks = 0;
                         }
                         pendingTarget = null;
                         pendingTicks = 0;
@@ -847,8 +855,9 @@ public class AutoFightPlugin extends Plugin
 
                         // A first retry right after a lost click is the classic human double-tap:
                         // short pad, fresh spot on the target.
-                        boolean quick = pendingAttempts == 1 && persona != null
-                                && random.nextInt(100) < persona.doubleTapChance;
+                        boolean quick = missNoticed || (pendingAttempts == 1 && persona != null
+                                && random.nextInt(100) < persona.doubleTapChance);
+                        missNoticed = false;
 
                         if (touch.attack(victim, quick))
                         {
@@ -858,6 +867,21 @@ public class AutoFightPlugin extends Plugin
                                 waitTicks = reactionDelay();
                         }
                 }
+        }
+
+        /**
+         * Two ticks after a tap the player should be fighting the target or at least walking
+         * there. Standing still with nothing targeted means the tap was lost.
+         */
+        private boolean tapMissed(Player local)
+        {
+                if (pendingTicks < 2 || local == null)
+                {
+                        return false;
+                }
+                return local.getInteracting() == null
+                        && client.getLocalDestinationLocation() == null
+                        && local.getPoseAnimation() == local.getIdlePoseAnimation();
         }
 
         /** True when "Attack" is the NPC's default left-click option (a plain tap attacks). */
@@ -1758,6 +1782,25 @@ public class AutoFightPlugin extends Plugin
                                 }
                                 emitMove(gen, fingerDown[0], fingerDown[1]);
 
+                                if (!misclick)
+                                {
+                                        // Look before tapping: make sure a tap here really attacks
+                                        // this target, re-aiming if it would not.
+                                        int[] aimed = aimUntilHover(gen, victim, "Attack", fingerDown);
+                                        if (aborted(gen))
+                                        {
+                                                return;
+                                        }
+                                        if (aimed == null)
+                                        {
+                                                // No plain tap lines up (something on top of it):
+                                                // long-press and pick Attack from the menu.
+                                                menuWalk(gen, fingerDown, p);
+                                                return;
+                                        }
+                                        fingerDown = aimed;
+                                }
+
                                 long pressStart = System.currentTimeMillis();
                                 // Micro drift while the finger is pressed (30% of taps): a tiny
                                 // two-axis sine/cosine wobble, well under the driver's drag slop.
@@ -2085,6 +2128,113 @@ public class AutoFightPlugin extends Plugin
                                 return null;
                         }
                         return out[0] != null ? out[0] : fallback;
+                }
+
+                /**
+                 * Lines the finger up before committing a tap: with the finger parked on the
+                 * aim point, read what a tap there would actually do (the client's top menu
+                 * entry). If it is not the wanted action on this exact target, slide to a
+                 * fresh, tighter point on the target and look again — up to three looks.
+                 *
+                 * @return the point to tap, or null when no plain tap lines up (use the menu)
+                 */
+                private int[] aimUntilHover(int gen, NPC victim, String wanted, int[] start)
+                {
+                        int[] aim = start;
+                        for (int attempt = 0; attempt < 3; attempt++)
+                        {
+                                if (attempt > 0)
+                                {
+                                        int[] next = refreshPoint(gen, victim, Placement.TIGHT_BOX, null);
+                                        if (aborted(gen))
+                                        {
+                                                return null;
+                                        }
+                                        if (next == null)
+                                        {
+                                                return aim; // client busy or target gone: keep the old aim
+                                        }
+                                        emitMove(gen, next[0], next[1]);
+                                        if (!sleep(2 + random.nextInt(7)) || aborted(gen))
+                                        {
+                                                return null;
+                                        }
+                                        emitMove(gen, next[0], next[1]);
+                                        aim = next;
+                                }
+                                Boolean hit = hoverHits(gen, victim, wanted);
+                                if (aborted(gen))
+                                {
+                                        return null;
+                                }
+                                if (hit == null || hit)
+                                {
+                                        return aim;
+                                }
+                                if (config.logInput())
+                                {
+                                        Log.i(LOG_TAG, "aim check: tap would not '" + wanted + "' the target, re-aiming");
+                                }
+                        }
+                        return null;
+                }
+
+                /**
+                 * True when the client's left-click (top) menu entry under the parked finger is
+                 * {@code wanted} on {@code victim}; null when it could not be read in time. A
+                 * negative is re-read once a frame later so a slow frame is not taken as a miss.
+                 */
+                private Boolean hoverHits(int gen, NPC victim, String wanted)
+                {
+                        for (int look = 0; look < 2; look++)
+                        {
+                                if (!sleep((look == 0 ? 28 : 22) + random.nextInt(20)) || aborted(gen))
+                                {
+                                        return null;
+                                }
+                                final CountDownLatch done = new CountDownLatch(1);
+                                final Boolean[] out = {null};
+                                clientThread.invokeLater(() ->
+                                {
+                                        try
+                                        {
+                                                if (client.isMenuOpen())
+                                                {
+                                                        return;
+                                                }
+                                                MenuEntry[] entries = client.getMenuEntries();
+                                                if (entries == null || entries.length == 0)
+                                                {
+                                                        out[0] = Boolean.FALSE;
+                                                        return;
+                                                }
+                                                MenuEntry top = entries[entries.length - 1];
+                                                String option = top.getOption() == null ? "" : Text.removeTags(top.getOption());
+                                                out[0] = top.getNpc() == victim && option.equalsIgnoreCase(wanted);
+                                        }
+                                        finally
+                                        {
+                                                done.countDown();
+                                        }
+                                });
+                                try
+                                {
+                                        if (!done.await(150, TimeUnit.MILLISECONDS))
+                                        {
+                                                return null;
+                                        }
+                                }
+                                catch (InterruptedException e)
+                                {
+                                        Thread.currentThread().interrupt();
+                                        return null;
+                                }
+                                if (out[0] == null || out[0])
+                                {
+                                        return out[0];
+                                }
+                        }
+                        return Boolean.FALSE;
                 }
 
                 private void requestMenuScan()
@@ -2897,7 +3047,7 @@ public class AutoFightPlugin extends Plugin
                 if (!MobileHitTest.isMenuOptionAt(rowX, rowY))
                 {
                         rowX = menuX + menuW / 2;
-                        rowY = menuY + headerH + rowH * idx + rowH / 2;
+                        rowY = menuY + headerH + rowH * rowFromTop + rowH / 2;
                 }
                 if (!MobileHitTest.isMenuOptionAt(rowX, rowY))
                 {
