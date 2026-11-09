@@ -1269,7 +1269,7 @@ public final class HumanInput
                                                 {
                                                         return;
                                                 }
-                                                if (random.nextInt(100) < style.approachChance && lastX >= 0)
+                                                // Curved (harmonic) approach before every gesture.
                                                 {
                                                         approachTrail(gen, point[0], point[1]);
                                                         if (aborted(gen))
@@ -1575,7 +1575,7 @@ public final class HumanInput
                                         && random.nextInt(100) < effectiveMisclickChance(p);
                                 int[] fingerDown = misclick ? ground : target;
 
-                                if (!misclick && random.nextInt(100) < p.approachChance && lastX >= 0)
+                                if (!misclick)
                                 {
                                         approachTrail(gen, fingerDown[0], fingerDown[1]);
                                         if (aborted(gen))
@@ -1713,7 +1713,7 @@ public final class HumanInput
                                 {
                                         return;
                                 }
-                                if (random.nextInt(100) < p.approachChance && lastX >= 0)
+                                // Curved (harmonic) approach before every gesture.
                                 {
                                         approachTrail(gen, pt[0], pt[1]);
                                         if (aborted(gen))
@@ -1765,6 +1765,12 @@ public final class HumanInput
                                 final double swing = 25d + random.nextInt(45);
                                 for (DropTarget target : targets)
                                 {
+                                        if (aborted(gen))
+                                        {
+                                                return;
+                                        }
+                                        // Slot to slot along a short harmonic curve, then the two parking moves.
+                                        approachTrail(gen, target.x, target.y);
                                         if (aborted(gen))
                                         {
                                                 return;
@@ -1878,7 +1884,7 @@ public final class HumanInput
                                                 return;
                                         }
 
-                                        if (random.nextInt(100) < p.approachChance && lastX >= 0)
+                                        // Curved (harmonic) approach before every gesture.
                                         {
                                                 approachTrail(gen, target.x, target.y);
                                                 if (aborted(gen))
@@ -2104,14 +2110,33 @@ public final class HumanInput
                  * Light finger slide toward the tap point: pure hover moves before the press,
                  * riding a randomized sine-wave path (see {@link #harmonicPath}).
                  */
+                /**
+                 * Every gesture starts with the finger travelling to its point along a
+                 * harmonic (trigonometric) curve. Before the first gesture the finger rests
+                 * at a random spot in the lower middle of the screen, like a thumb at rest.
+                 */
                 private void approachTrail(int gen, int toX, int toY)
                 {
+                        if (lastX < 0 || lastY < 0)
+                        {
+                                int w = canvasWidth();
+                                int h = canvasHeight();
+                                if (w <= 0 || h <= 0)
+                                {
+                                        return;
+                                }
+                                lastX = (int) (w * (0.35d + random.nextDouble() * 0.3d));
+                                lastY = (int) (h * (0.6d + random.nextDouble() * 0.25d));
+                        }
                         double dist = Math.hypot(toX - lastX, toY - lastY);
                         if (dist < 6)
                         {
                                 return;
                         }
-                        harmonicPath(gen, lastX, lastY, toX, toY, 160 + random.nextInt(300));
+                        // Time scales with distance: a quick flick between neighbouring slots,
+                        // a longer glide across the screen.
+                        int duration = (int) Math.min(460.0d, 45.0d + dist * 1.4d) + random.nextInt(90);
+                        harmonicPath(gen, lastX, lastY, toX, toY, duration);
                 }
 
                 /** Drag path from one point to another along a randomized harmonic curve. */

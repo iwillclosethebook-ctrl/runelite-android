@@ -158,7 +158,12 @@ public class AutoFightPlugin extends Plugin
         private static final String LOG_TAG = "AutoFight";
 
         /** Ticks after a counted kill during which the looter may act. */
-        private static final int LOOT_WINDOW_TICKS = 15;
+        /** Ticks to wait for a drop to appear after the death animation starts. */
+        private static final int DROP_APPEAR_TICKS = 6;
+        /** Our drops stay ours (and worth walking back for) about a minute. */
+        private static final int DROP_EXPIRE_TICKS = 100;
+        /** Taps on one ground item before giving up on it. */
+        private static final int MAX_LOOT_ATTEMPTS = 3;
 
         /** Ticks to wait for combat to actually start before assuming the attack click was lost. */
         private static final int ATTACK_WAIT_TICKS = 6;
@@ -246,7 +251,21 @@ public class AutoFightPlugin extends Plugin
         private boolean idleNotified;
         private boolean lowHpNotified;
 
-        private int lootTicksLeft;
+        private int tickCount;
+
+        // ---- looting: one decision per kill, kept until it is done ----
+        /** Where our kills dropped their loot. */
+        private final List<int[]> drops = new ArrayList<>(); // {x, y, plane, tick}
+        /** Committed to picking up loot now (decided when the kill landed). */
+        private boolean looting;
+        private int lootStartTick;
+        /** The wave this looting run follows: item order = angle + amp * sin(freq * distance + phase). */
+        private double lootWaveAmp;
+        private double lootWaveFreq;
+        private double lootWavePhase;
+        private Target pendingLoot;
+        private int pendingLootTicks;
+        private final java.util.Map<Object, Integer> lootAttempts = new java.util.HashMap<>();
         private int waitTicks;
         /** Set when a tap visibly did nothing; the next attempt goes out at once with a short pad. */
         private boolean missNoticed;
@@ -512,7 +531,11 @@ public class AutoFightPlugin extends Plugin
 
         private void clearAutomation()
         {
-                lootTicksLeft = 0;
+                drops.clear();
+                looting = false;
+                pendingLoot = null;
+                pendingLootTicks = 0;
+                lootAttempts.clear();
                 waitTicks = 0;
                 pendingTarget = null;
                 pendingTicks = 0;
@@ -672,10 +695,6 @@ public class AutoFightPlugin extends Plugin
 
         private void automate()
         {
-                if (lootTicksLeft > 0)
-                {
-                        lootTicksLeft--;
-                }
                 if (eatCooldown > 0)
                 {
                         eatCooldown--;
@@ -767,6 +786,16 @@ public class AutoFightPlugin extends Plugin
                         bankBlocked = false;
                 }
 
+                expireDrops();
+
+                // Committed to looting (decided when the kill landed): finish it before anything
+                // else, so the script never flips between "next target" and "pick it up".
+                if (looting)
+                {
+                        tickLooting(local);
+                        return;
+                }
+
                 // In combat: the attack landed, so drop any pending state.
                 if (currentTarget != null)
                 {
@@ -800,9 +829,11 @@ public class AutoFightPlugin extends Plugin
                         return;
                 }
 
-                if (config.autoLoot() && lootTicksLeft > 0 && tryLoot(local))
+                // Loot left for later (kill-first decision) gets picked up when there is nothing
+                // to fight, or before it would expire.
+                if (config.autoLoot() && !drops.isEmpty() && (nextTarget == null || dropsAboutToExpire()))
                 {
-                        waitTicks = input.reactionDelay();
+                        startLooting();
                         return;
                 }
 
@@ -825,6 +856,227 @@ public class AutoFightPlugin extends Plugin
                                 waitTicks = input.reactionDelay();
                         }
                 }
+        }
+
+        // ---------------------------------------------------------------- loot decisions
+
+        /**
+         * A counted kill: remember where it dropped, then decide once — loot right away
+         * (the configured chance) or keep fighting and collect it later together with the
+         * next drops. The decision stands until that looting run is finished.
+         */
+        private void onKill(NPC npc)
+        {
+                if (!config.autoLoot())
+                {
+                        return;
+                }
+                WorldPoint wp = npc.getWorldLocation();
+                if (wp != null)
+                {
+                        drops.add(new int[]{wp.getX(), wp.getY(), wp.getPlane(), tickCount});
+                }
+                if (!looting && random.nextInt(100) < config.lootNowChance())
+                {
+                        startLooting();
+                }
+                input.log("kill: " + (looting ? "loot now" : "loot later") + " (" + drops.size() + " drop piles)");
+        }
+
+        private void startLooting()
+        {
+                looting = true;
+                lootStartTick = tickCount;
+                pendingLoot = null;
+                pendingLootTicks = 0;
+                lootAttempts.clear();
+                // A fresh wave for this run: how the pick-up order sweeps around the player.
+                lootWaveAmp = 0.4d + random.nextDouble() * 1.4d;
+                lootWaveFreq = 0.3d + random.nextInt(8) * 0.25d;
+                lootWavePhase = random.nextDouble() * Math.PI * 2.0d;
+        }
+
+        private void stopLooting()
+        {
+                looting = false;
+                drops.clear();
+                pendingLoot = null;
+                pendingLootTicks = 0;
+                lootAttempts.clear();
+                waitTicks = input.reactionDelay();
+        }
+
+        private void expireDrops()
+        {
+                drops.removeIf(d -> tickCount - d[3] > DROP_EXPIRE_TICKS);
+        }
+
+        private boolean dropsAboutToExpire()
+        {
+                for (int[] d : drops)
+                {
+                        if (tickCount - d[3] > DROP_EXPIRE_TICKS - 25)
+                        {
+                                return true;
+                        }
+                }
+                return false;
+        }
+
+        /** One looting tick: wait for the drop, pick items one by one along the wave, then finish. */
+        private void tickLooting(Player local)
+        {
+                if (input.isBusy())
+                {
+                        return;
+                }
+                if (pendingLoot != null)
+                {
+                        pendingLootTicks++;
+                        boolean moving = client.getLocalDestinationLocation() != null;
+                        if (pendingLoot.isLive() && (moving || pendingLootTicks < 3) && pendingLootTicks < 10)
+                        {
+                                return; // walking over / picking it up
+                        }
+                        pendingLoot = null;
+                        pendingLootTicks = 0;
+                }
+                if (GameHelpers.inventoryFull(client))
+                {
+                        stopLooting(); // banking (if enabled) takes over
+                        return;
+                }
+                LootCandidate next = nextLoot(local);
+                if (next == null)
+                {
+                        // Nothing (yet): the drop appears a few ticks after the death animation.
+                        if (tickCount - lootStartTick < DROP_APPEAR_TICKS)
+                        {
+                                return;
+                        }
+                        stopLooting();
+                        return;
+                }
+                int tries = lootAttempts.getOrDefault(next.target.raw(), 0);
+                if (tries >= MAX_LOOT_ATTEMPTS)
+                {
+                        return;
+                }
+                if (input.interact(next.target, "Take", true, false, false))
+                {
+                        lootAttempts.put(next.target.raw(), tries + 1);
+                        pendingLoot = next.target;
+                        pendingLootTicks = 0;
+                        waitTicks = Math.min(input.reactionDelay(), 2);
+                }
+        }
+
+        private static final class LootCandidate
+        {
+                final Target target;
+                final double key;
+
+                LootCandidate(Target target, double key)
+                {
+                        this.target = target;
+                        this.key = key;
+                }
+        }
+
+        /**
+         * The next item to pick up: listed loot lying on (or right next to) one of our drop
+         * tiles, reachable, within the loot radius. Among those the order follows this run's
+         * wave — angle around the player bent by amp * sin(freq * distance + phase) — so the
+         * finger sweeps the piles in a curve that is different every time.
+         */
+        private LootCandidate nextLoot(Player local)
+        {
+                if (lootIds.isEmpty() && lootNames.isEmpty())
+                {
+                        return null;
+                }
+                WorldView wv = client.getTopLevelWorldView();
+                LocalPoint here = local.getLocalLocation();
+                if (wv == null || wv.getScene() == null || here == null)
+                {
+                        return null;
+                }
+                Tile[][][] tiles = wv.getScene().getTiles();
+                int plane = wv.getPlane();
+                if (plane < 0 || plane >= tiles.length)
+                {
+                        return null;
+                }
+                int meX = here.getSceneX();
+                int meY = here.getSceneY();
+                int radius = config.lootRadius();
+                LootCandidate best = null;
+                Tile[][] plane2d = tiles[plane];
+                for (int x = Math.max(meX - radius, 0); x <= Math.min(meX + radius, plane2d.length - 1); x++)
+                {
+                        Tile[] column = plane2d[x];
+                        if (column == null)
+                        {
+                                continue;
+                        }
+                        for (int y = Math.max(meY - radius, 0); y <= Math.min(meY + radius, column.length - 1); y++)
+                        {
+                                Tile tile = column[y];
+                                if (tile == null || !nearOurDrop(tile.getWorldLocation()))
+                                {
+                                        continue;
+                                }
+                                if (reach != null && !reach.tile(x, y) && !reach.canInteract(x, y, 1, 1))
+                                {
+                                        continue;
+                                }
+                                List<TileItem> items = tile.getGroundItems();
+                                if (items == null)
+                                {
+                                        continue;
+                                }
+                                for (TileItem item : items)
+                                {
+                                        if (!isLootItem(item.getId()))
+                                        {
+                                                continue;
+                                        }
+                                        final Tile t = tile;
+                                        final int id = item.getId();
+                                        Target target = Targets.groundItem(client, t, id, () -> hasGroundItem(t, id));
+                                        if (lootAttempts.getOrDefault(target.raw(), 0) >= MAX_LOOT_ATTEMPTS)
+                                        {
+                                                continue;
+                                        }
+                                        double dx = x - meX;
+                                        double dy = y - meY;
+                                        double dist = Math.hypot(dx, dy);
+                                        double angle = Math.atan2(dy, dx) + Math.PI; // 0..2pi
+                                        double key = angle + lootWaveAmp * Math.sin(lootWaveFreq * dist + lootWavePhase) + dist * 0.05d;
+                                        if (best == null || key < best.key)
+                                        {
+                                                best = new LootCandidate(target, key);
+                                        }
+                                }
+                        }
+                }
+                return best;
+        }
+
+        private boolean nearOurDrop(WorldPoint wp)
+        {
+                if (wp == null)
+                {
+                        return false;
+                }
+                for (int[] d : drops)
+                {
+                        if (d[2] == wp.getPlane() && Math.abs(d[0] - wp.getX()) <= 2 && Math.abs(d[1] - wp.getY()) <= 2)
+                        {
+                                return true;
+                        }
+                }
+                return false;
         }
 
         // ---------------------------------------------------------------- eating
@@ -1006,89 +1258,6 @@ public class AutoFightPlugin extends Plugin
 
         // ---------------------------------------------------------------- looting
 
-        /**
-         * Takes the nearest reachable ground item from the loot list within the loot radius:
-         * tap on the item pile, re-aimed or done by long-press + "Take" when the top option
-         * would pick up something else.
-         */
-        private boolean tryLoot(Player local)
-        {
-                if (lootIds.isEmpty() && lootNames.isEmpty())
-                {
-                        return false;
-                }
-                if (GameHelpers.inventoryFull(client))
-                {
-                        return false;
-                }
-                WorldView wv = client.getTopLevelWorldView();
-                if (wv == null || wv.getScene() == null)
-                {
-                        return false;
-                }
-                LocalPoint here = local.getLocalLocation();
-                if (here == null)
-                {
-                        return false;
-                }
-                Tile[][][] tiles = wv.getScene().getTiles();
-                int plane = wv.getPlane();
-                if (plane < 0 || plane >= tiles.length)
-                {
-                        return false;
-                }
-                int meX = here.getSceneX();
-                int meY = here.getSceneY();
-                int radius = config.lootRadius();
-                Tile bestTile = null;
-                int bestItem = -1;
-                int bestDist = Integer.MAX_VALUE;
-                Tile[][] plane2d = tiles[plane];
-                for (int x = Math.max(meX - radius, 0); x <= Math.min(meX + radius, plane2d.length - 1); x++)
-                {
-                        Tile[] column = plane2d[x];
-                        if (column == null)
-                        {
-                                continue;
-                        }
-                        for (int y = Math.max(meY - radius, 0); y <= Math.min(meY + radius, column.length - 1); y++)
-                        {
-                                Tile tile = column[y];
-                                if (tile == null)
-                                {
-                                        continue;
-                                }
-                                int d = Math.max(Math.abs(x - meX), Math.abs(y - meY));
-                                if (d >= bestDist || (reach != null && !reach.tile(x, y) && !reach.canInteract(x, y, 1, 1)))
-                                {
-                                        continue;
-                                }
-                                List<TileItem> items = tile.getGroundItems();
-                                if (items == null)
-                                {
-                                        continue;
-                                }
-                                for (TileItem item : items)
-                                {
-                                        if (isLootItem(item.getId()))
-                                        {
-                                                bestTile = tile;
-                                                bestItem = item.getId();
-                                                bestDist = d;
-                                                break;
-                                        }
-                                }
-                        }
-                }
-                if (bestTile == null)
-                {
-                        return false;
-                }
-                final Tile tile = bestTile;
-                final int itemId = bestItem;
-                Target target = Targets.groundItem(client, tile, itemId, () -> hasGroundItem(tile, itemId));
-                return input.interact(target, "Take", true, false, false);
-        }
 
         private static boolean hasGroundItem(Tile tile, int itemId)
         {
@@ -1219,7 +1388,7 @@ public class AutoFightPlugin extends Plugin
                                 sessionStart = Instant.now();
                         }
                         kills++;
-                        lootTicksLeft = LOOT_WINDOW_TICKS;
+                        onKill(npc);
                         notifier.notify(config.notifyKill(), "Killed " + Text.removeTags(String.valueOf(npc.getName())) + " (" + kills + ")");
                         input.onProgress();
                 }
@@ -1262,6 +1431,7 @@ public class AutoFightPlugin extends Plugin
         @Subscribe
         public void onGameTick(GameTick tick)
         {
+                tickCount++;
                 NPC prevCurrent = currentTarget;
                 NPC prevNext = nextTarget;
 

@@ -263,6 +263,20 @@ public interface AutoFightConfig extends Config
                 return "";
         }
 
+        @Range(max = 100)
+        @ConfigItem(
+                keyName = "lootNowChance",
+                name = "Loot right away (%)",
+                description = "After each kill the script decides once: loot now (this chance) or fight on and collect the "
+                        + "drops later together with the next ones. The decision is kept until that loot run is done.",
+                section = automationSection,
+                position = 5
+        )
+        default int lootNowChance()
+        {
+                return 70;
+        }
+
         @Range(min = 1, max = 15)
         @ConfigItem(
                 keyName = "lootRadius",
