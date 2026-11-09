@@ -39,6 +39,7 @@ import net.runelite.api.GameState;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
+import net.runelite.client.plugins.gamedata.LocalReach;
 import net.runelite.api.NPCComposition;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
@@ -171,7 +172,7 @@ public class AutoFightPlugin extends Plugin
         private static final int MISCORRECT_MAX_MS = 97;
 
         /** Rate limit for off-screen rescue camera turns. */
-        private static final long RESCUE_COOLDOWN_MS = 15_000L;
+        private static final long RESCUE_COOLDOWN_MS = 4_000L;
 
         @Inject
         private Client client;
@@ -208,6 +209,7 @@ public class AutoFightPlugin extends Plugin
 
         private final Set<Integer> targetIds = new HashSet<>();
         private final List<NPC> matching = new ArrayList<>();
+        private final java.util.Map<NPC, Long> unreachableUntil = new java.util.HashMap<>();
 
         private final Set<Integer> lootIds = new HashSet<>();
         private final Set<String> lootNames = new HashSet<>(); // lowercase
@@ -252,6 +254,8 @@ public class AutoFightPlugin extends Plugin
 
         private volatile boolean menuScanPending;
         private volatile long menuScanRequestedAt;
+        /** The exact NPC / object the wanted row must belong to; null = any row with the option. */
+        private volatile Object menuScanTarget;
         private volatile int[] menuActionPoint; // stretched canvas coords
         private volatile int menuActionKind;   // 0 none, 1 attack row, 2 dismiss point
 
@@ -450,12 +454,58 @@ public class AutoFightPlugin extends Plugin
                         return;
                 }
                 WorldPoint center = huntCenter(client.getLocalPlayer());
+                LocalReach reach = LocalReach.compute(client);
                 for (NPC npc : wv.npcs())
                 {
-                        if (matches(npc) && !npcUtil.isDying(npc) && inHuntRange(npc, center))
+                        if (matches(npc) && !npcUtil.isDying(npc) && inHuntRange(npc, center) && reachable(reach, npc))
                         {
                                 matching.add(npc);
                         }
+                }
+        }
+
+        /**
+         * True when the player can actually get next to this NPC right now (live collision:
+         * closed doors and fences count), and it has not just answered "I can't reach that!".
+         */
+        private boolean reachable(LocalReach reach, NPC npc)
+        {
+                Long until = unreachableUntil.get(npc);
+                if (until != null)
+                {
+                        if (until > System.currentTimeMillis())
+                        {
+                                return false;
+                        }
+                        unreachableUntil.remove(npc);
+                }
+                if (reach == null)
+                {
+                        return true;
+                }
+                NPCComposition comp = npc.getTransformedComposition();
+                int size = comp == null ? 1 : Math.max(1, comp.getSize());
+                return reach.canInteractCentred(npc.getLocalLocation(), size);
+        }
+
+        /** The game said the last tap's target cannot be reached: leave it alone for a minute. */
+        private void markUnreachable()
+        {
+                NPC target = pendingTarget != null ? pendingTarget : lastVictim;
+                if (target == null)
+                {
+                        return;
+                }
+                unreachableUntil.put(target, System.currentTimeMillis() + 60_000L);
+                if (unreachableUntil.size() > 64)
+                {
+                        unreachableUntil.clear();
+                }
+                pendingTarget = null;
+                pendingTicks = 0;
+                if (config.logInput())
+                {
+                        Log.i(LOG_TAG, "target unreachable, skipping it for a minute");
                 }
         }
 
@@ -1770,7 +1820,7 @@ public class AutoFightPlugin extends Plugin
 
                                 if (menu)
                                 {
-                                        menuWalk(gen, fingerDown, p);
+                                        menuWalk(gen, fingerDown, p, victim);
                                         return;
                                 }
 
@@ -1795,7 +1845,7 @@ public class AutoFightPlugin extends Plugin
                                         {
                                                 // No plain tap lines up (something on top of it):
                                                 // long-press and pick Attack from the menu.
-                                                menuWalk(gen, fingerDown, p);
+                                                menuWalk(gen, fingerDown, p, victim);
                                                 return;
                                         }
                                         fingerDown = aimed;
@@ -1888,7 +1938,7 @@ public class AutoFightPlugin extends Plugin
                  * Long-press to open the context menu, drag the finger to the "Attack" row,
                  * and click it — the touch equivalent of right-click → option.
                  */
-                private void menuWalk(int gen, int[] down, Persona p)
+                private void menuWalk(int gen, int[] down, Persona p, Object target)
                 {
                         // Finger down: park the cursor, then hold perfectly still — any movement
                         // would turn the long-press into a camera drag.
@@ -1909,7 +1959,7 @@ public class AutoFightPlugin extends Plugin
                         lastY = down[1];
 
                         // Ask the client thread where the "Attack" row was drawn.
-                        requestMenuScan();
+                        requestMenuScan(target);
                         long deadline = System.currentTimeMillis() + 900;
                         while (menuScanPending && menuActionPoint == null
                                 && System.currentTimeMillis() < deadline && !aborted(gen))
@@ -2237,8 +2287,9 @@ public class AutoFightPlugin extends Plugin
                         return Boolean.FALSE;
                 }
 
-                private void requestMenuScan()
+                private void requestMenuScan(Object target)
                 {
+                        menuScanTarget = target;
                         menuActionPoint = null;
                         menuActionKind = 0;
                         menuScanRequestedAt = System.currentTimeMillis();
@@ -2722,7 +2773,13 @@ public class AutoFightPlugin extends Plugin
                 int from = client.getCameraYawTarget() & JAU14_MASK;
                 int half = (JAU14_MASK + 1) / 2;
                 int delta = Math.floorMod(goal - from + half, JAU14_MASK + 1) - half;
-                if (random.nextInt(100) < 20)
+                if (rescue)
+                {
+                        // Bring it into view, not dead centre: settle a little to one side of it,
+                        // the way a thumb drags until the target is "on screen enough".
+                        delta += (random.nextBoolean() ? 1 : -1) * (250 + random.nextInt(450));
+                }
+                else if (random.nextInt(100) < 20)
                 {
                         // Occasionally spin the long way round, like a player twirling the camera.
                         delta = delta > 0 ? delta - (JAU14_MASK + 1) : delta + (JAU14_MASK + 1);
@@ -2741,7 +2798,7 @@ public class AutoFightPlugin extends Plugin
                 double easeExp = 1.7d + random.nextDouble() * 1.1d;
 
                 List<CameraLeg> legs = new ArrayList<>(3);
-                int outcome = rescue ? 70 + random.nextInt(30) : random.nextInt(100);
+                int outcome = rescue ? (random.nextInt(100) < 25 ? random.nextInt(30) : 60 + random.nextInt(40)) : random.nextInt(100);
                 if (outcome < 30)
                 {
                         // Overshoot: fling past the target, then a quick ease-out settle back.
@@ -2896,6 +2953,21 @@ public class AutoFightPlugin extends Plugin
         }
 
         @Subscribe
+        public void onChatMessage(net.runelite.api.events.ChatMessage event)
+        {
+                if (event.getType() != net.runelite.api.ChatMessageType.GAMEMESSAGE
+                        && event.getType() != net.runelite.api.ChatMessageType.SPAM)
+                {
+                        return;
+                }
+                String message = Text.removeTags(String.valueOf(event.getMessage()));
+                if (message.startsWith("I can't reach that"))
+                {
+                        markUnreachable();
+                }
+        }
+
+        @Subscribe
         public void onGameTick(GameTick tick)
         {
                 NPC prevCurrent = currentTarget;
@@ -2984,6 +3056,12 @@ public class AutoFightPlugin extends Plugin
          * waiting gesture. When no attack row exists, a safe dismiss point is produced
          * instead so the gesture can tap the menu away.
          */
+        /** True when a menu row belongs to the scan target (or there is no specific target). */
+        private static boolean menuEntryIsTarget(MenuEntry entry, Object target)
+        {
+                return target == null || entry.getNpc() == target;
+        }
+
         private void serviceMenuScan()
         {
                 if (!menuScanPending)
@@ -3014,7 +3092,7 @@ public class AutoFightPlugin extends Plugin
                 for (int i = 0; i < entries.length; i++)
                 {
                         String option = entries[i].getOption();
-                        if (option != null && "Attack".equalsIgnoreCase(Text.removeTags(option)))
+                        if (option != null && "Attack".equalsIgnoreCase(Text.removeTags(option)) && menuEntryIsTarget(entries[i], menuScanTarget))
                         {
                                 idx = i;
                                 break;

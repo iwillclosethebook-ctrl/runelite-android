@@ -1,0 +1,8 @@
+collision-map.zip and transports.tsv come from the ShortestPath plugin by Skretzo
+(https://github.com/Skretzo/shortest-path), as redistributed by the Microbot project
+(https://github.com/chsami/Microbot). Both are BSD-2-Clause licensed:
+
+Copyright (c) 2022, Skretzo; Microbot contributors. All rights reserved.
+Redistribution and use in source and binary forms, with or without modification, are
+permitted provided that the copyright notice, this list of conditions and the
+disclaimer in the Java sources of this package are retained.

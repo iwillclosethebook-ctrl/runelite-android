@@ -45,6 +45,7 @@ import net.runelite.api.Player;
 import net.runelite.api.Point;
 import net.runelite.api.Scene;
 import net.runelite.api.Tile;
+import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
@@ -65,6 +66,10 @@ import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.gamedata.BankLocation;
+import net.runelite.client.plugins.gamedata.LocalReach;
+import net.runelite.client.plugins.gamedata.PathFinder;
+import net.runelite.client.plugins.gamedata.Transport;
+import net.runelite.client.plugins.gamedata.WorldCollision;
 import net.runelite.client.plugins.mobile.MobileHitTest;
 import net.runelite.client.plugins.mobile.MobileInventoryOverlay;
 import net.runelite.client.plugins.mobile.MobileScrollbars;
@@ -220,15 +225,42 @@ public class AutoWoodcutPlugin extends Plugin
         private int stepTicks;
         /** No usable bank: stay put until the inventory is no longer full. */
         private boolean bankBlocked;
-        // current walk leg
-        private WorldPoint legStart;
+        // ---- web walking (ShortestPath data: collision map + doors/stairs/ladders) ----
+        private static final int WALK_ARRIVED = 0;
+        private static final int WALK_BUSY = 1;
+        private static final int WALK_FAILED = 2;
+        private final java.util.concurrent.ExecutorService pathExecutor = Executors.newSingleThreadExecutor(r ->
+        {
+                Thread t = new Thread(r, LOG_TAG + "-Path");
+                t.setDaemon(true);
+                return t;
+        });
+        private volatile PathFinder.Result pathResult;
+        private volatile boolean pathPending;
+        private volatile int pathGeneration;
+        private boolean waitingForMap;
+        private List<PathFinder.Step> path;
+        private int pathIndex;
+        private List<WorldPoint> walkTargets = Collections.emptyList();
+        private int walkArrive;
+        private int walkMaxCost;
+        private final Set<Transport> bannedTransports = new HashSet<>();
+        private List<Transport> usableTransports;
+        private long usableTransportsAt;
+        private Transport activeTransport;
+        private int transportTicks;
+        private TileObject transportObject;
         private WorldPoint walkGoal;
         private WorldPoint lastPos;
         private int stillTicks;
-        private int walkFails;
-        private double pathAmp;
-        private double pathPhase;
-        private double pathFreq;
+        private int recomputes;
+        private double walkPhase;
+        /** Banks considered for the current trip, in the order handed to the path finder. */
+        private List<BankLocation> bankCandidates = Collections.emptyList();
+
+        // ---- reachability ----
+        private LocalReach reach;
+        private final java.util.Map<String, Long> unreachableUntil = new java.util.HashMap<>();
 
         // ---- input style rotation ----
         private volatile Persona persona;
@@ -276,6 +308,11 @@ public class AutoWoodcutPlugin extends Plugin
                 menuActionPoint = null;
                 menuActionKind = 0;
                 touch.start();
+                // Load the walking data in the background so the first bank trip does not wait.
+                WorldCollision.startLoading();
+                Thread preload = new Thread(Transport::all, LOG_TAG + "-Transports");
+                preload.setDaemon(true);
+                preload.start();
                 overlayManager.add(overlay);
                 overlayManager.add(treeOverlay);
                 overlayManager.add(huntOverlay);
@@ -475,7 +512,7 @@ public class AutoWoodcutPlugin extends Plugin
         }
 
         /** True when {@code wanted} is the object's left-click (first) option. */
-        private boolean actionIsDefaultAction(GameObject obj, String wanted)
+        private boolean actionIsDefaultAction(TileObject obj, String wanted)
         {
                 ObjectComposition comp = composition(obj.getId());
                 if (comp == null || wanted == null)
@@ -498,20 +535,69 @@ public class AutoWoodcutPlugin extends Plugin
         }
 
         /** True when a menu entry is an option on exactly this object (id and tile). */
-        private static boolean objectMatches(MenuEntry entry, GameObject obj)
+        private static boolean objectMatches(MenuEntry entry, TileObject obj)
         {
                 if (entry == null || obj == null || entry.getIdentifier() != obj.getId())
                 {
                         return false;
                 }
-                Point min = obj.getSceneMinLocation();
-                return min != null && entry.getParam0() == min.getX() && entry.getParam1() == min.getY();
+                int bx;
+                int by;
+                if (obj instanceof GameObject)
+                {
+                        Point min = ((GameObject) obj).getSceneMinLocation();
+                        if (min == null)
+                        {
+                                return false;
+                        }
+                        bx = min.getX();
+                        by = min.getY();
+                }
+                else
+                {
+                        LocalPoint lp = obj.getLocalLocation();
+                        if (lp == null)
+                        {
+                                return false;
+                        }
+                        bx = lp.getSceneX();
+                        by = lp.getSceneY();
+                }
+                return entry.getParam0() == bx && entry.getParam1() == by;
+        }
+
+        /** The object's model hull for tap placement (clickbox for kinds without one). */
+        private static Shape hullOf(TileObject obj)
+        {
+                if (obj instanceof GameObject)
+                {
+                        return ((GameObject) obj).getConvexHull();
+                }
+                if (obj instanceof net.runelite.api.WallObject)
+                {
+                        return ((net.runelite.api.WallObject) obj).getConvexHull();
+                }
+                if (obj instanceof net.runelite.api.DecorativeObject)
+                {
+                        return ((net.runelite.api.DecorativeObject) obj).getConvexHull();
+                }
+                if (obj instanceof net.runelite.api.GroundObject)
+                {
+                        return ((net.runelite.api.GroundObject) obj).getConvexHull();
+                }
+                return obj.getClickbox();
+        }
+
+        /** True when a menu row belongs to the scan target (or there is no specific target). */
+        private static boolean menuEntryIsTarget(MenuEntry entry, Object target)
+        {
+                return target == null || (target instanceof TileObject && objectMatches(entry, (TileObject) target));
         }
 
         /** Something the touch engine may still aim at: a live tree or the bank being opened. */
-        private boolean isLiveTarget(GameObject obj)
+        private boolean isLiveTarget(TileObject obj)
         {
-                return obj != null && (trees.contains(obj) || obj == bankObject);
+                return obj != null && (trees.contains(obj) || obj == bankObject || obj == transportObject);
         }
 
         /**
@@ -588,6 +674,7 @@ public class AutoWoodcutPlugin extends Plugin
                         return;
                 }
 
+                reach = LocalReach.compute(client);
                 WorldPoint centre = huntCenter(local);
                 LocalPoint centreLocal = centre == null ? null : LocalPoint.fromWorld(wv, centre);
                 boolean ranged = config.useHuntRange() && centreLocal != null;
@@ -599,7 +686,7 @@ public class AutoWoodcutPlugin extends Plugin
                         {
                                 continue;
                         }
-                        if (isTree(obj))
+                        if (isTree(obj) && canInteract(obj))
                         {
                                 trees.add(obj);
                         }
@@ -1087,29 +1174,562 @@ public class AutoWoodcutPlugin extends Plugin
                         && local.getPoseAnimation() == local.getIdlePoseAnimation();
         }
 
+        // ---------------------------------------------------------------- reachability
+
+        private static String objectKey(TileObject obj)
+        {
+                WorldPoint wp = obj.getWorldLocation();
+                return obj.getId() + "@" + (wp == null ? "?" : wp.getX() + "," + wp.getY() + "," + wp.getPlane());
+        }
+
+        private boolean isMarkedUnreachable(TileObject obj)
+        {
+                Long until = unreachableUntil.get(objectKey(obj));
+                if (until == null)
+                {
+                        return false;
+                }
+                if (until > System.currentTimeMillis())
+                {
+                        return true;
+                }
+                unreachableUntil.remove(objectKey(obj));
+                return false;
+        }
+
+        private void markUnreachable(TileObject obj)
+        {
+                if (obj == null)
+                {
+                        return;
+                }
+                if (unreachableUntil.size() > 64)
+                {
+                        unreachableUntil.clear();
+                }
+                unreachableUntil.put(objectKey(obj), System.currentTimeMillis() + 120_000L);
+                if (config.logInput())
+                {
+                        Log.i(LOG_TAG, "unreachable, skipping for 2 minutes: " + objectKey(obj));
+                }
+        }
+
+        /**
+         * True when the player can walk up to this object right now (live collision, so
+         * closed doors and fences count) and the game has not just refused it.
+         */
+        private boolean canInteract(TileObject obj)
+        {
+                if (obj == null || isMarkedUnreachable(obj))
+                {
+                        return false;
+                }
+                LocalReach r = reach;
+                if (r == null)
+                {
+                        return true;
+                }
+                if (obj instanceof GameObject)
+                {
+                        GameObject g = (GameObject) obj;
+                        Point min = g.getSceneMinLocation();
+                        if (min == null)
+                        {
+                                return false;
+                        }
+                        return r.canInteract(min.getX(), min.getY(), g.sizeX(), g.sizeY());
+                }
+                LocalPoint lp = obj.getLocalLocation();
+                return lp != null && r.canInteract(lp.getSceneX(), lp.getSceneY(), 1, 1);
+        }
+
+        /** "I can't reach that!": blame whatever the last tap went to. */
+        private void onCantReach()
+        {
+                if (activeTransport != null)
+                {
+                        bannedTransports.add(activeTransport);
+                        activeTransport = null;
+                        transportObject = null;
+                        if (path != null || pathPending)
+                        {
+                                reroute();
+                        }
+                        return;
+                }
+                if (bankStep == BankStep.OPENING && bankObject != null)
+                {
+                        markUnreachable(bankObject);
+                        bankObject = null;
+                        bankStep = BankStep.TO_BANK;
+                        stepTicks = 0;
+                        return;
+                }
+                GameObject t = pendingTree != null ? pendingTree : lastTree;
+                if (t != null)
+                {
+                        markUnreachable(t);
+                        pendingTree = null;
+                        pendingTicks = 0;
+                        if (nextTree == t)
+                        {
+                                nextTree = null;
+                        }
+                }
+        }
+
+        // ---------------------------------------------------------------- walking
+
+        private static int cheb(WorldPoint a, int x, int y)
+        {
+                return Math.max(Math.abs(a.getX() - x), Math.abs(a.getY() - y));
+        }
+
+        /** Starts walking toward the nearest of {@code targets} (within {@code arrive} tiles). */
+        private void startWalk(List<WorldPoint> targets, int arrive, int maxCost)
+        {
+                walkTargets = new ArrayList<>(targets);
+                walkArrive = arrive;
+                walkMaxCost = maxCost;
+                recomputes = 0;
+                bannedTransports.clear();
+                walkPhase = random.nextDouble() * Math.PI * 2.0d;
+                requestPath();
+        }
+
+        private void stopWalk()
+        {
+                pathGeneration++;
+                path = null;
+                pathResult = null;
+                pathPending = false;
+                waitingForMap = false;
+                pathIndex = 0;
+                activeTransport = null;
+                transportObject = null;
+                walkGoal = null;
+                lastPos = null;
+                stillTicks = 0;
+        }
+
+        private void requestPath()
+        {
+                path = null;
+                pathResult = null;
+                pathIndex = 0;
+                activeTransport = null;
+                transportObject = null;
+                walkGoal = null;
+                lastPos = null;
+                stillTicks = 0;
+                Player local = client.getLocalPlayer();
+                if (local == null || walkTargets.isEmpty())
+                {
+                        pathPending = false;
+                        return;
+                }
+                final WorldCollision map = WorldCollision.get();
+                if (map == null)
+                {
+                        waitingForMap = true;
+                        pathPending = true;
+                        return;
+                }
+                waitingForMap = false;
+                long now = System.currentTimeMillis();
+                if (usableTransports == null || now - usableTransportsAt > 300_000L)
+                {
+                        usableTransports = Transport.usable(client);
+                        usableTransportsAt = now;
+                }
+                final List<Transport> ts = usableTransports;
+                final WorldPoint from = local.getWorldLocation();
+                final List<WorldPoint> targets = new ArrayList<>(walkTargets);
+                final int arrive = walkArrive;
+                final int max = walkMaxCost;
+                final Set<Transport> banned = new HashSet<>(bannedTransports);
+                final int gen = ++pathGeneration;
+                pathPending = true;
+                pathExecutor.execute(() ->
+                {
+                        PathFinder.Result r = null;
+                        try
+                        {
+                                r = PathFinder.find(map, ts, from, targets, arrive, max, banned);
+                        }
+                        catch (RuntimeException e)
+                        {
+                                Log.w(LOG_TAG, "path search failed", e);
+                        }
+                        if (gen != pathGeneration)
+                        {
+                                return;
+                        }
+                        pathResult = r;
+                        pathPending = false;
+                        if (config.logInput())
+                        {
+                                Log.i(LOG_TAG, r == null ? "no path found" : "path: " + r.steps.size() + " tiles, cost " + r.cost);
+                        }
+                });
+        }
+
+        private int reroute()
+        {
+                if (++recomputes > 5)
+                {
+                        return WALK_FAILED;
+                }
+                requestPath();
+                return WALK_BUSY;
+        }
+
+        /**
+         * One tick of following the path: minimap taps a varying distance ahead (the
+         * look-ahead rides a sine wave so the rhythm never settles), doors / stairs /
+         * ladders used with a real tap when they come up, re-planning when knocked off
+         * the path or stuck.
+         */
+        private int tickWalk(Player local)
+        {
+                if (waitingForMap)
+                {
+                        if (WorldCollision.get() == null)
+                        {
+                                return WALK_BUSY;
+                        }
+                        requestPath();
+                        return WALK_BUSY;
+                }
+                if (path == null)
+                {
+                        if (pathPending)
+                        {
+                                return WALK_BUSY;
+                        }
+                        PathFinder.Result r = pathResult;
+                        if (r == null)
+                        {
+                                return WALK_FAILED;
+                        }
+                        path = r.steps;
+                        pathIndex = 0;
+                        onPathFound(r);
+                }
+
+                WorldPoint here = local.getWorldLocation();
+                boolean moving = client.getLocalDestinationLocation() != null;
+
+                int best = -1;
+                int bestD = Integer.MAX_VALUE;
+                int from = Math.max(0, pathIndex - 3);
+                int to = Math.min(path.size() - 1, pathIndex + 40);
+                for (int i = from; i <= to; i++)
+                {
+                        PathFinder.Step st = path.get(i);
+                        if (st.z != here.getPlane())
+                        {
+                                continue;
+                        }
+                        int d = cheb(here, st.x, st.y);
+                        if (d < bestD || (d == bestD && i > best))
+                        {
+                                best = i;
+                                bestD = d;
+                        }
+                }
+                if (best < 0 || bestD > 3)
+                {
+                        if (activeTransport != null && transportTicks++ < 12)
+                        {
+                                return WALK_BUSY; // climbing / going through
+                        }
+                        if (activeTransport != null)
+                        {
+                                bannedTransports.add(activeTransport);
+                                activeTransport = null;
+                        }
+                        if (moving)
+                        {
+                                return WALK_BUSY;
+                        }
+                        return reroute();
+                }
+                pathIndex = best;
+                if (activeTransport != null && transportTicks++ > 2)
+                {
+                        activeTransport = null;
+                        transportObject = null;
+                }
+
+                PathFinder.Step last = path.get(path.size() - 1);
+                if (last.z == here.getPlane() && cheb(here, last.x, last.y) <= Math.max(1, walkArrive))
+                {
+                        return WALK_ARRIVED;
+                }
+
+                if (lastPos != null && lastPos.equals(here))
+                {
+                        stillTicks++;
+                }
+                else
+                {
+                        stillTicks = 0;
+                        lastPos = here;
+                }
+                if (stillTicks >= 8 && !moving)
+                {
+                        stillTicks = 0;
+                        return reroute();
+                }
+                if (touch.isBusy() || activeTransport != null)
+                {
+                        return WALK_BUSY;
+                }
+
+                // A door, staircase or ladder coming up?
+                int t = -1;
+                for (int i = pathIndex + 1; i < path.size() && i <= pathIndex + 14; i++)
+                {
+                        if (path.get(i).via != null)
+                        {
+                                t = i;
+                                break;
+                        }
+                }
+                int limit = path.size() - 1;
+                if (t >= 0)
+                {
+                        Transport tr = path.get(t).via;
+                        TileObject obj = findTransportObject(tr);
+                        if (obj != null)
+                        {
+                                limit = t - 1;
+                                if (t - pathIndex <= 6 || cheb(here, tr.originX, tr.originY) <= 5)
+                                {
+                                        if (!objectVisibleForTap(obj))
+                                        {
+                                                maybeRescueCamera(obj);
+                                                return WALK_BUSY;
+                                        }
+                                        transportObject = obj;
+                                        if (touch.interact(obj, tr.option, false, false))
+                                        {
+                                                activeTransport = tr;
+                                                transportTicks = 0;
+                                                walkGoal = null;
+                                                waitTicks = 1 + random.nextInt(2);
+                                                if (config.logInput())
+                                                {
+                                                        Log.i(LOG_TAG, "transport: " + tr);
+                                                }
+                                        }
+                                        return WALK_BUSY;
+                                }
+                        }
+                        else if (path.get(t).z != here.getPlane())
+                        {
+                                limit = t - 1;
+                                if (cheb(here, tr.originX, tr.originY) <= 2 && !moving)
+                                {
+                                        // Stairs / ladder not where the map says: plan around it.
+                                        bannedTransports.add(tr);
+                                        return reroute();
+                                }
+                        }
+                        // Same plane and no object found (door already open): walk straight through.
+                }
+
+                if (moving && walkGoal != null && cheb(here, walkGoal.getX(), walkGoal.getY()) > 2 + random.nextInt(3))
+                {
+                        return WALK_BUSY;
+                }
+                if (!moving && walkGoal != null && stillTicks < 2)
+                {
+                        return WALK_BUSY;
+                }
+
+                walkPhase += 0.7d + random.nextDouble() * 0.8d;
+                int look = 9 + (int) Math.round(3.5d * Math.sin(walkPhase)) + random.nextInt(3);
+                for (int j = Math.min(limit, pathIndex + look); j > pathIndex; j--)
+                {
+                        PathFinder.Step st = path.get(j);
+                        if (st.z != here.getPlane())
+                        {
+                                continue;
+                        }
+                        int[] pt = minimapPoint(st.x, st.y);
+                        if (pt == null)
+                        {
+                                continue;
+                        }
+                        if (touch.tap(pt, "walk"))
+                        {
+                                walkGoal = st.point();
+                                waitTicks = 1 + random.nextInt(2);
+                        }
+                        return WALK_BUSY;
+                }
+                return WALK_BUSY;
+        }
+
+        /** Minimap tap point for a world tile on the current plane, or null when off the minimap. */
+        private int[] minimapPoint(int worldX, int worldY)
+        {
+                WorldView wv = client.getTopLevelWorldView();
+                if (wv == null)
+                {
+                        return null;
+                }
+                LocalPoint lp = LocalPoint.fromWorld(wv, worldX, worldY);
+                if (lp == null)
+                {
+                        return null;
+                }
+                Point mm = Perspective.localToMinimap(client, lp);
+                if (mm == null)
+                {
+                        return null;
+                }
+                int[] s = toStretched(mm.getX(), mm.getY());
+                s[0] += signedJitter(2);
+                s[1] += signedJitter(2);
+                return s;
+        }
+
+        /** The door / staircase / ladder a transport uses, near its origin tile; null when not there. */
+        private TileObject findTransportObject(Transport tr)
+        {
+                WorldView wv = client.getTopLevelWorldView();
+                if (wv == null || wv.getPlane() != tr.originZ)
+                {
+                        return null;
+                }
+                LocalPoint lp = LocalPoint.fromWorld(wv, tr.originX, tr.originY);
+                if (lp == null)
+                {
+                        return null;
+                }
+                Scene scene = wv.getScene();
+                Tile[][][] tiles = scene == null ? null : scene.getTiles();
+                if (tiles == null || tr.originZ >= tiles.length)
+                {
+                        return null;
+                }
+                Tile[][] layer = tiles[tr.originZ];
+                TileObject byName = null;
+                int cx = lp.getSceneX();
+                int cy = lp.getSceneY();
+                for (int x = Math.max(0, cx - 2); x <= Math.min(layer.length - 1, cx + 2); x++)
+                {
+                        for (int y = Math.max(0, cy - 2); y <= Math.min(layer[x].length - 1, cy + 2); y++)
+                        {
+                                Tile tile = layer[x][y];
+                                if (tile == null)
+                                {
+                                        continue;
+                                }
+                                List<TileObject> objs = new ArrayList<>(6);
+                                GameObject[] gos = tile.getGameObjects();
+                                if (gos != null)
+                                {
+                                        for (GameObject g : gos)
+                                        {
+                                                if (g != null)
+                                                {
+                                                        objs.add(g);
+                                                }
+                                        }
+                                }
+                                if (tile.getWallObject() != null)
+                                {
+                                        objs.add(tile.getWallObject());
+                                }
+                                if (tile.getDecorativeObject() != null)
+                                {
+                                        objs.add(tile.getDecorativeObject());
+                                }
+                                if (tile.getGroundObject() != null)
+                                {
+                                        objs.add(tile.getGroundObject());
+                                }
+                                for (TileObject o : objs)
+                                {
+                                        ObjectComposition comp = composition(o.getId());
+                                        if (comp == null || !hasAction(comp, tr.option))
+                                        {
+                                                continue;
+                                        }
+                                        if (o.getId() == tr.objectId)
+                                        {
+                                                return o;
+                                        }
+                                        if (byName == null && tr.target.equalsIgnoreCase(Text.removeTags(String.valueOf(comp.getName()))))
+                                        {
+                                                byName = o;
+                                        }
+                                }
+                        }
+                }
+                return byName;
+        }
+
         // ---------------------------------------------------------------- banking
 
         private void startBanking(Player local)
         {
                 WorldPoint here = local.getWorldLocation();
-                BankLocation b = BankLocation.nearest(client, here, config.bankMaxDistance(), false);
-                if (b == null)
+                List<BankLocation> candidates = new ArrayList<>();
+                List<WorldPoint> points = new ArrayList<>();
+                for (BankLocation b : BankLocation.values())
+                {
+                        if (b.getNote() != null)
+                        {
+                                continue;
+                        }
+                        WorldPoint wp = b.getWorldPoint();
+                        if (cheb(here, wp.getX(), wp.getY()) > config.bankMaxDistance())
+                        {
+                                continue;
+                        }
+                        if (!b.isAccessible(client))
+                        {
+                                continue;
+                        }
+                        candidates.add(b);
+                        points.add(wp);
+                }
+                if (candidates.isEmpty())
                 {
                         bankBlocked = true;
                         notifier.notify(config.notifyFull(), "Inventory full — no usable bank within "
                                 + config.bankMaxDistance() + " tiles");
                         return;
                 }
-                bank = b;
+                bankCandidates = candidates;
+                bank = null;
                 bankObject = null;
                 returnPoint = huntCenter != null ? huntCenter : here;
-                beginWalk(here);
                 bankStep = BankStep.TO_BANK;
                 stepTicks = 0;
+                startWalk(points, 3, config.bankMaxDistance() * 2 + 60);
                 waitTicks = reactionDelay();
                 if (config.logInput())
                 {
-                        Log.i(LOG_TAG, "banking at " + b.getDisplayName() + " (" + here.distanceTo(b.getWorldPoint()) + " tiles)");
+                        Log.i(LOG_TAG, "banking: " + candidates.size() + " candidate banks");
+                }
+        }
+
+        /** Path finder finished: remember which bank it chose. */
+        private void onPathFound(PathFinder.Result r)
+        {
+                if (bankStep == BankStep.TO_BANK && r.target >= 0 && r.target < bankCandidates.size())
+                {
+                        bank = bankCandidates.get(r.target);
+                        if (config.logInput())
+                        {
+                                Log.i(LOG_TAG, "walking to " + bank.getDisplayName() + " (" + r.steps.size() + " tiles)");
+                        }
                 }
         }
 
@@ -1118,10 +1738,8 @@ public class AutoWoodcutPlugin extends Plugin
                 bankStep = BankStep.NONE;
                 bank = null;
                 bankObject = null;
-                walkGoal = null;
-                legStart = null;
-                stillTicks = 0;
-                walkFails = 0;
+                bankCandidates = Collections.emptyList();
+                stopWalk();
         }
 
         private void failBanking(String why)
@@ -1135,17 +1753,9 @@ public class AutoWoodcutPlugin extends Plugin
                 bankBlocked = true;
         }
 
-        /** Starts a new walk leg: rolls the sine wave this leg's path will bend along. */
-        private void beginWalk(WorldPoint from)
+        private String bankName()
         {
-                legStart = from;
-                walkGoal = null;
-                lastPos = null;
-                stillTicks = 0;
-                walkFails = 0;
-                pathAmp = (0.8d + random.nextDouble() * 2.6d) * (random.nextBoolean() ? 1 : -1);
-                pathFreq = 1 + random.nextInt(3);
-                pathPhase = random.nextDouble() * Math.PI * 0.6d;
+                return bank == null ? "the bank" : bank.getDisplayName();
         }
 
         private void tickBanking(Player local)
@@ -1164,6 +1774,7 @@ public class AutoWoodcutPlugin extends Plugin
                         {
                                 if (bankOpen())
                                 {
+                                        stopWalk();
                                         bankStep = BankStep.DEPOSITING;
                                         stepTicks = 0;
                                         return;
@@ -1172,12 +1783,17 @@ public class AutoWoodcutPlugin extends Plugin
                                 {
                                         return;
                                 }
-                                GameObject booth = findBankObject(local, 12);
-                                if (booth != null && objectVisibleForTap(booth))
+                                GameObject booth = findBankObject(local, 10);
+                                boolean nearEnd = path != null && path.size() - pathIndex <= 10;
+                                if (booth != null && (nearEnd || booth.getWorldLocation().distanceTo(here) <= 6))
                                 {
-                                        String action = bankAction(booth);
+                                        if (!objectVisibleForTap(booth))
+                                        {
+                                                maybeRescueCamera(booth);
+                                                return;
+                                        }
                                         bankObject = booth;
-                                        if (touch.interact(booth, action, false, false))
+                                        if (touch.interact(booth, bankAction(booth), false, false))
                                         {
                                                 bankStep = BankStep.OPENING;
                                                 stepTicks = 0;
@@ -1185,25 +1801,25 @@ public class AutoWoodcutPlugin extends Plugin
                                         }
                                         return;
                                 }
-                                if (booth != null && !moving)
+                                int w = tickWalk(local);
+                                if (w == WALK_FAILED)
                                 {
-                                        maybeRescueCamera(booth);
+                                        failBanking("No walkable route to a bank within " + config.bankMaxDistance() + " tiles");
                                 }
-                                if (here.distanceTo(bank.getWorldPoint()) <= 3 && booth == null)
+                                else if (w == WALK_ARRIVED && booth == null && !moving)
                                 {
-                                        if (stepTicks > 25)
+                                        if (stepTicks > 400 || ++walkArrivedTicks > 12)
                                         {
-                                                failBanking("No bank booth or chest found at " + bank.getDisplayName());
+                                                failBanking("No reachable bank booth or chest at " + bankName());
                                         }
-                                        return;
                                 }
-                                walkToward(local, bank.getWorldPoint(), moving);
                                 return;
                         }
                         case OPENING:
                         {
                                 if (bankOpen())
                                 {
+                                        stopWalk();
                                         bankStep = BankStep.DEPOSITING;
                                         stepTicks = 0;
                                         waitTicks = 1 + random.nextInt(2);
@@ -1215,7 +1831,6 @@ public class AutoWoodcutPlugin extends Plugin
                                 }
                                 if (stepTicks >= 4)
                                 {
-                                        // Lost or interrupted: look for the booth again.
                                         bankStep = BankStep.TO_BANK;
                                         stepTicks = 0;
                                 }
@@ -1236,8 +1851,9 @@ public class AutoWoodcutPlugin extends Plugin
                                 if (!hasDepositables())
                                 {
                                         bankStep = BankStep.RETURNING;
-                                        beginWalk(here);
                                         stepTicks = 0;
+                                        walkArrivedTicks = 0;
+                                        startWalk(Collections.singletonList(returnPoint), 2, config.bankMaxDistance() * 2 + 60);
                                         waitTicks = 1 + random.nextInt(3);
                                         return;
                                 }
@@ -1266,140 +1882,38 @@ public class AutoWoodcutPlugin extends Plugin
                         }
                         case RETURNING:
                         {
-                                if (returnPoint == null || here.distanceTo(returnPoint) <= 2)
+                                if (returnPoint == null)
+                                {
+                                        endBanking();
+                                        return;
+                                }
+                                boolean inRange = returnPoint.getPlane() == here.getPlane()
+                                        && cheb(here, returnPoint.getX(), returnPoint.getY()) <= Math.max(2, config.huntRadius() / 2);
+                                if (inRange && !trees.isEmpty())
                                 {
                                         endBanking();
                                         nextTree = null;
                                         waitTicks = reactionDelay();
                                         return;
                                 }
-                                // Close enough when trees in the heat range are already in reach.
-                                if (here.distanceTo(returnPoint) <= Math.max(3, config.huntRadius() / 2) && !trees.isEmpty())
+                                int w = tickWalk(local);
+                                if (w == WALK_ARRIVED)
                                 {
                                         endBanking();
                                         nextTree = null;
-                                        return;
+                                        waitTicks = reactionDelay();
                                 }
-                                if (touch.isBusy())
+                                else if (w == WALK_FAILED)
                                 {
-                                        return;
+                                        failBanking("No walkable route back to the trees");
                                 }
-                                walkToward(local, returnPoint, moving);
                                 return;
                         }
                         default:
                 }
         }
 
-        /**
-         * One step of a minimap walk toward {@code dest}. Re-taps ahead before the player
-         * reaches the current waypoint (a player keeps clicking ahead), notices when the
-         * player is stuck and swings the path the other way, and gives up after a few tries.
-         */
-        private void walkToward(Player local, WorldPoint dest, boolean moving)
-        {
-                WorldPoint here = local.getWorldLocation();
-                if (lastPos != null && lastPos.equals(here))
-                {
-                        stillTicks++;
-                }
-                else
-                {
-                        stillTicks = 0;
-                        lastPos = here;
-                }
-
-                if (moving && walkGoal != null && here.distanceTo(walkGoal) > 2 + random.nextInt(3))
-                {
-                        return; // still on the way to the last waypoint
-                }
-                if (!moving && walkGoal != null && stillTicks < 2)
-                {
-                        return; // the tap may not have started the walk yet
-                }
-                if (stillTicks >= 5)
-                {
-                        walkFails++;
-                        stillTicks = 0;
-                        // Stuck against something: bend the path the other way, wider.
-                        pathAmp = -Math.signum(pathAmp == 0 ? 1 : pathAmp) * Math.min(6.0d, Math.abs(pathAmp) + 1.5d);
-                        if (walkFails > 6)
-                        {
-                                failBanking("Stuck walking to " + (bankStep == BankStep.RETURNING ? "the trees" : bank.getDisplayName()));
-                                return;
-                        }
-                }
-
-                int[] point = minimapWaypoint(here, dest);
-                if (point == null)
-                {
-                        walkFails++;
-                        if (walkFails > 6)
-                        {
-                                failBanking("Could not plot a walk to " + (bankStep == BankStep.RETURNING ? "the trees" : bank.getDisplayName()));
-                        }
-                        return;
-                }
-                touch.tap(point, "walk");
-                waitTicks = 1 + random.nextInt(2);
-        }
-
-        /**
-         * The next minimap tap toward {@code dest}: 8-14 tiles along the line, pushed
-         * sideways by this leg's sine wave (amplitude fading out near the end so the walk
-         * lands on target). Shortens the step until the waypoint is on the minimap.
-         */
-        private int[] minimapWaypoint(WorldPoint here, WorldPoint dest)
-        {
-                WorldView wv = client.getTopLevelWorldView();
-                if (wv == null)
-                {
-                        return null;
-                }
-                double dx = dest.getX() - here.getX();
-                double dy = dest.getY() - here.getY();
-                double dist = Math.hypot(dx, dy);
-                if (dist < 1.0d)
-                {
-                        return null;
-                }
-                WorldPoint start = legStart == null ? here : legStart;
-                double total = Math.max(dist, Math.hypot(dest.getX() - start.getX(), dest.getY() - start.getY()));
-                double ux = dx / dist;
-                double uy = dy / dist;
-
-                double step = Math.min(dist, 8 + random.nextInt(7));
-                for (int tries = 0; tries < 5 && step >= 2.0d; tries++, step -= 2.5d)
-                {
-                        double remaining = dist - step;
-                        double progress = Math.max(0.0d, Math.min(1.0d, 1.0d - remaining / total));
-                        double fade = Math.min(1.0d, remaining / 5.0d);
-                        double lateral = pathAmp * Math.sin(Math.PI * pathFreq * progress + pathPhase) * fade;
-                        int wx = here.getX() + (int) Math.round(ux * step - uy * lateral);
-                        int wy = here.getY() + (int) Math.round(uy * step + ux * lateral);
-                        if (remaining < 1.0d)
-                        {
-                                wx = dest.getX();
-                                wy = dest.getY();
-                        }
-                        LocalPoint lp = LocalPoint.fromWorld(wv, wx, wy);
-                        if (lp == null)
-                        {
-                                continue;
-                        }
-                        Point mm = Perspective.localToMinimap(client, lp);
-                        if (mm == null)
-                        {
-                                continue;
-                        }
-                        int[] s = toStretched(mm.getX(), mm.getY());
-                        s[0] += signedJitter(2);
-                        s[1] += signedJitter(2);
-                        walkGoal = new WorldPoint(wx, wy, here.getPlane());
-                        return s;
-                }
-                return null;
-        }
+        private int walkArrivedTicks;
 
         private boolean bankOpen()
         {
@@ -1407,7 +1921,7 @@ public class AutoWoodcutPlugin extends Plugin
                 return w != null && !w.isHidden();
         }
 
-        /** Nearest bank booth / chest within {@code radius} tiles of the player, or null. */
+        /** Nearest reachable bank booth / chest within {@code radius} tiles of the player, or null. */
         private GameObject findBankObject(Player local, int radius)
         {
                 LocalPoint here = local.getLocalLocation();
@@ -1416,7 +1930,7 @@ public class AutoWoodcutPlugin extends Plugin
                 int bestDist = Integer.MAX_VALUE;
                 for (GameObject obj : objectsAround(here, radius))
                 {
-                        if (bankAction(obj) == null)
+                        if (bankAction(obj) == null || !canInteract(obj))
                         {
                                 continue;
                         }
@@ -1818,7 +2332,7 @@ public class AutoWoodcutPlugin extends Plugin
          * tapped twice in a row. Null when the spot is not tappable (off screen, behind a
          * relocated interface, or outside the canvas).
          */
-        private int[] objectTapPoint(GameObject npc, Placement placement)
+        private int[] objectTapPoint(TileObject npc, Placement placement)
         {
                 int[] real = hullPoint(npc, placement);
                 if (real == null)
@@ -1862,9 +2376,9 @@ public class AutoWoodcutPlugin extends Plugin
         }
 
         /** Random point inside the object's hull in real canvas space, per the placement strategy. */
-        private int[] hullPoint(GameObject npc, Placement placement)
+        private int[] hullPoint(TileObject npc, Placement placement)
         {
-                Shape hull = npc.getConvexHull();
+                Shape hull = hullOf(npc);
                 if (hull == null)
                 {
                         return null;
@@ -1945,9 +2459,9 @@ public class AutoWoodcutPlugin extends Plugin
         }
 
         /** True when the object's clickbox is at least partly on the canvas. */
-        private boolean objectVisibleForTap(GameObject npc)
+        private boolean objectVisibleForTap(TileObject npc)
         {
-                Shape hull = npc.getConvexHull();
+                Shape hull = hullOf(npc);
                 if (hull == null)
                 {
                         return false;
@@ -1965,7 +2479,7 @@ public class AutoWoodcutPlugin extends Plugin
          * a tile within 1-2 of the spot's tile that is on screen, not on an interface, and
          * does not overlap the hull itself.
          */
-        private int[] groundMisclickPoint(GameObject npc)
+        private int[] groundMisclickPoint(TileObject npc)
         {
                 WorldPoint at = npc.getWorldLocation();
                 WorldView wv = client.getTopLevelWorldView();
@@ -1974,7 +2488,7 @@ public class AutoWoodcutPlugin extends Plugin
                         return null;
                 }
 
-                Shape hull = npc.getConvexHull();
+                Shape hull = hullOf(npc);
                 Rectangle hullReal = hull == null ? null : hull.getBounds();
                 int[] hullCentre = null;
                 int hx0 = Integer.MIN_VALUE, hy0 = Integer.MIN_VALUE, hx1 = Integer.MIN_VALUE, hy1 = Integer.MIN_VALUE;
@@ -2257,7 +2771,7 @@ public class AutoWoodcutPlugin extends Plugin
                  * @param allowMisclick whether this tap may slip onto the ground first
                  * @return true when a gesture was scheduled
                  */
-                boolean interact(GameObject target, String wanted, boolean quickRetry, boolean allowMisclick)
+                boolean interact(TileObject target, String wanted, boolean quickRetry, boolean allowMisclick)
                 {
                         if (!running || busy || persona == null || wanted == null)
                         {
@@ -2295,7 +2809,7 @@ public class AutoWoodcutPlugin extends Plugin
                         }
 
                         final int gen = ++generation;
-                        final GameObject victim = target;
+                        final TileObject victim = target;
                         final Persona style = p;
                         final boolean menu = useMenu;
                         final String action = wanted;
@@ -2400,7 +2914,7 @@ public class AutoWoodcutPlugin extends Plugin
                                                                 return;
                                                         }
                                                 }
-                                                menuWalk(gen, point, style, option);
+                                                menuWalk(gen, point, style, option, null);
                                         }
                                         finally
                                         {
@@ -2587,7 +3101,7 @@ public class AutoWoodcutPlugin extends Plugin
 
                 // ---- gesture scripts (timeline thread) ----
 
-                private void runInteract(int gen, GameObject victim, Persona p, boolean menu, String wanted, int[] pt, int[] ground, int[] dismiss, int pad)
+                private void runInteract(int gen, TileObject victim, Persona p, boolean menu, String wanted, int[] pt, int[] ground, int[] dismiss, int pad)
                 {
                         try
                         {
@@ -2633,7 +3147,7 @@ public class AutoWoodcutPlugin extends Plugin
 
                                 if (menu)
                                 {
-                                        menuWalk(gen, fingerDown, p, wanted);
+                                        menuWalk(gen, fingerDown, p, wanted, victim);
                                         return;
                                 }
 
@@ -2658,7 +3172,7 @@ public class AutoWoodcutPlugin extends Plugin
                                         {
                                                 // No plain tap lines up (something on top of it):
                                                 // long-press and pick the action from the menu.
-                                                menuWalk(gen, fingerDown, p, wanted);
+                                                menuWalk(gen, fingerDown, p, wanted, victim);
                                                 return;
                                         }
                                         fingerDown = aimed;
@@ -2953,7 +3467,7 @@ public class AutoWoodcutPlugin extends Plugin
                                         lastY = target.y;
 
                                         // Ask the client thread where the "Drop" row was drawn.
-                                        requestMenuScan("Drop");
+                                        requestMenuScan("Drop", null);
                                         long deadline = System.currentTimeMillis() + 900;
                                         while (menuScanPending && menuActionPoint == null
                                                 && System.currentTimeMillis() < deadline && !aborted(gen))
@@ -3039,7 +3553,7 @@ public class AutoWoodcutPlugin extends Plugin
                  * (a fishing action, "Drop", ...), and click it — the touch equivalent of
                  * right-click → option.
                  */
-                private void menuWalk(int gen, int[] down, Persona p, String wanted)
+                private void menuWalk(int gen, int[] down, Persona p, String wanted, Object target)
                 {
                         // Finger down: park the cursor, then hold perfectly still — any movement
                         // would turn the long-press into a camera drag.
@@ -3060,7 +3574,7 @@ public class AutoWoodcutPlugin extends Plugin
                         lastY = down[1];
 
                         // Ask the client thread where the wanted row was drawn.
-                        requestMenuScan(wanted);
+                        requestMenuScan(wanted, target);
                         long deadline = System.currentTimeMillis() + 900;
                         while (menuScanPending && menuActionPoint == null
                                 && System.currentTimeMillis() < deadline && !aborted(gen))
@@ -3233,7 +3747,7 @@ public class AutoWoodcutPlugin extends Plugin
                  * go now. Null means "abort the gesture" (spot gone or plugin stopping); the
                  * previous point is kept when the hull cannot be recomputed.
                  */
-                private int[] refreshPoint(int gen, GameObject victim, Placement placement, int[] fallback)
+                private int[] refreshPoint(int gen, TileObject victim, Placement placement, int[] fallback)
                 {
                         final CountDownLatch done = new CountDownLatch(1);
                         final int[][] out = {null};
@@ -3290,7 +3804,7 @@ public class AutoWoodcutPlugin extends Plugin
                  *
                  * @return the point to tap, or null when no plain tap lines up (use the menu)
                  */
-                private int[] aimUntilHover(int gen, GameObject victim, String wanted, int[] start)
+                private int[] aimUntilHover(int gen, TileObject victim, String wanted, int[] start)
                 {
                         int[] aim = start;
                         for (int attempt = 0; attempt < 3; attempt++)
@@ -3336,7 +3850,7 @@ public class AutoWoodcutPlugin extends Plugin
                  * {@code wanted} on {@code victim}; null when it could not be read in time. A
                  * negative is re-read once a frame later so a slow frame is not taken as a miss.
                  */
-                private Boolean hoverHits(int gen, GameObject victim, String wanted)
+                private Boolean hoverHits(int gen, TileObject victim, String wanted)
                 {
                         for (int look = 0; look < 2; look++)
                         {
@@ -3389,8 +3903,9 @@ public class AutoWoodcutPlugin extends Plugin
                         return Boolean.FALSE;
                 }
 
-                private void requestMenuScan(String option)
+                private void requestMenuScan(String option, Object target)
                 {
+                        menuScanTarget = target;
                         menuActionPoint = null;
                         menuActionKind = 0;
                         menuScanWanted = option;
@@ -3822,7 +4337,7 @@ public class AutoWoodcutPlugin extends Plugin
         }
 
         /** Slow humanized turn to bring an off-screen target back into view (rate-limited). */
-        private void maybeRescueCamera(GameObject target)
+        private void maybeRescueCamera(TileObject target)
         {
                 if (!config.cameraRescue() || yawAnim != null)
                 {
@@ -3876,7 +4391,13 @@ public class AutoWoodcutPlugin extends Plugin
                 int from = client.getCameraYawTarget() & JAU14_MASK;
                 int half = (JAU14_MASK + 1) / 2;
                 int delta = Math.floorMod(goal - from + half, JAU14_MASK + 1) - half;
-                if (random.nextInt(100) < 20)
+                if (rescue)
+                {
+                        // Bring it into view, not dead centre: settle a little to one side of it,
+                        // the way a thumb drags until the target is "on screen enough".
+                        delta += (random.nextBoolean() ? 1 : -1) * (250 + random.nextInt(450));
+                }
+                else if (random.nextInt(100) < 20)
                 {
                         // Occasionally spin the long way round, like a player twirling the camera.
                         delta = delta > 0 ? delta - (JAU14_MASK + 1) : delta + (JAU14_MASK + 1);
@@ -3895,7 +4416,7 @@ public class AutoWoodcutPlugin extends Plugin
                 double easeExp = 1.7d + random.nextDouble() * 1.1d;
 
                 List<CameraLeg> legs = new ArrayList<>(3);
-                int outcome = rescue ? 70 + random.nextInt(30) : random.nextInt(100);
+                int outcome = rescue ? (random.nextInt(100) < 25 ? random.nextInt(30) : 60 + random.nextInt(40)) : random.nextInt(100);
                 if (outcome < 30)
                 {
                         // Overshoot: fling past the target, then a quick ease-out settle back.
@@ -4025,6 +4546,11 @@ public class AutoWoodcutPlugin extends Plugin
                         return;
                 }
                 String message = Text.removeTags(String.valueOf(event.getMessage()));
+                if (message.startsWith("I can't reach that"))
+                {
+                        onCantReach();
+                        return;
+                }
                 if (message.startsWith("You get some ") || message.startsWith("You get a "))
                 {
                         if (sessionStart == null)
@@ -4098,12 +4624,6 @@ public class AutoWoodcutPlugin extends Plugin
                 }
         }
 
-        /**
-         * Resolves a pending menu scan: locates the wanted row (a fishing action, "Drop",
-         * ...) in the open context menu (in stretched canvas space, where taps are
-         * dispatched) and hands the point to the waiting gesture. When no such row exists,
-         * a safe dismiss point is produced instead so the gesture can tap the menu away.
-         */
         private void serviceMenuScan()
         {
                 if (!menuScanPending)
@@ -4135,7 +4655,8 @@ public class AutoWoodcutPlugin extends Plugin
                 for (int i = 0; i < entries.length; i++)
                 {
                         String option = entries[i].getOption();
-                        if (option != null && wanted != null && wanted.equalsIgnoreCase(Text.removeTags(option)))
+                        if (option != null && wanted != null && wanted.equalsIgnoreCase(Text.removeTags(option))
+                                && menuEntryIsTarget(entries[i], menuScanTarget))
                         {
                                 idx = i;
                                 break;

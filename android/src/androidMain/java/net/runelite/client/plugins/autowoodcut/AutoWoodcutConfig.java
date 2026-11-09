@@ -72,8 +72,8 @@ public interface AutoWoodcutConfig extends Config
                 keyName = "fullInvMode",
                 name = "When the inventory is full",
                 description = "Notify: stop and notify. Drop: shift-drop everything except the keep list along a fresh "
-                        + "sine wave. Bank: walk to the nearest usable bank (minimap taps along a gently curving path), "
-                        + "deposit everything except the keep list, then walk back to the heat centre.",
+                        + "sine wave. Bank: walk to the nearest reachable bank along a real path "
+                        + "(doors, stairs, ladders), deposit everything except the keep list, then walk back to the heat centre.",
                 section = fullSection,
                 position = 0
         )
@@ -108,18 +108,19 @@ public interface AutoWoodcutConfig extends Config
                 return true;
         }
 
-        @Range(min = 10, max = 120)
+        @Range(min = 10, max = 250)
         @ConfigItem(
                 keyName = "bankMaxDistance",
                 name = "Max bank distance (tiles)",
-                description = "Only banks this close are used. The walker taps the minimap in a straight-ish line, so "
-                        + "keep this to banks without big obstacles in the way.",
+                description = "Banks further than this (straight line) are not considered. The walk itself follows a "
+                        + "real path through doors, stairs and ladders (the same map data Microbot's web walker uses), "
+                        + "so an upstairs bank like Lumbridge works.",
                 section = fullSection,
                 position = 3
         )
         default int bankMaxDistance()
         {
-                return 60;
+                return 100;
         }
 
         @ConfigItem(
