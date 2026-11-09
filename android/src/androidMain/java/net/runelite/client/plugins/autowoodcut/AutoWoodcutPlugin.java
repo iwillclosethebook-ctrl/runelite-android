@@ -168,6 +168,7 @@ public class AutoWoodcutPlugin extends Plugin
                         () -> config.huntRadius());
                 parseKeep();
                 parseCenter();
+                input.setTrainedSkill(net.runelite.api.Skill.WOODCUTTING);
                 input.start();
                 WebWalker.preload();
                 overlayManager.add(overlay);

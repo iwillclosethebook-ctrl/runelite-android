@@ -32,6 +32,7 @@ import net.runelite.api.MenuEntry;
 import net.runelite.api.Perspective;
 import net.runelite.api.Player;
 import net.runelite.api.Point;
+import net.runelite.api.Skill;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
@@ -113,6 +114,8 @@ public final class HumanInput
         private volatile int menuActionKind;       // 0 none, 1 wanted row, 2 dismiss point
 
         private long nextHoverDriftAt;
+        private XpGlance xpGlance;
+        private volatile Skill trainedSkill;
 
         private final TouchEngine touch = new TouchEngine();
 
@@ -141,6 +144,10 @@ public final class HumanInput
         {
                 touch.stop();
                 reset();
+                if (xpGlance != null)
+                {
+                        xpGlance.reset();
+                }
         }
 
         /** Forget gestures, camera turns and menu scans in flight (logout, hop, script stop). */
@@ -190,10 +197,35 @@ public final class HumanInput
                 }
         }
 
-        /** Once per game tick: rotates the input style, and idles the finger while {@code waiting}. */
+        /** The skill this script trains (what an XP check looks at). Null = the last skill that gained XP. */
+        public void setTrainedSkill(Skill skill)
+        {
+                this.trainedSkill = skill;
+        }
+
+        /** The XP-check habit (for overlays: {@code xpGlance().status()}). */
+        public XpGlance xpGlance()
+        {
+                if (xpGlance == null)
+                {
+                        xpGlance = new XpGlance(this);
+                }
+                return xpGlance;
+        }
+
+        /**
+         * Once per game tick: rotates the input style, now and then checks XP in the Skills
+         * tab, and idles the finger while {@code waiting}.
+         */
         public void onGameTick(boolean waiting)
         {
                 maybeRotatePersona();
+                XpGlance xp = xpGlance();
+                xp.tick(client, trainedSkill, waiting);
+                if (xp.active())
+                {
+                        return;
+                }
                 if (!waiting || touch.isBusy() || System.currentTimeMillis() < nextHoverDriftAt)
                 {
                         return;
@@ -294,6 +326,18 @@ public final class HumanInput
         public boolean type(String text, boolean enter)
         {
                 return touch.type(text, enter);
+        }
+
+        /** One real key stroke (separate press and release with a human hold), e.g. an F-key. */
+        public boolean pressKey(int vk, String label)
+        {
+                return touch.pressKey(vk, label);
+        }
+
+        /** Rest the finger on a point for a while without tapping (curved approach, tiny wander). */
+        public boolean hover(int[] point, int dwellMs, String label)
+        {
+                return touch.hover(point, dwellMs, label);
         }
 
         /** A fresh point inside the middle half of a widget (stretched canvas space), or null. */
@@ -959,7 +1003,9 @@ public final class HumanInput
                         }
                         // Note: no interface hit-test here — the inventory is exactly the interface
                         // we are supposed to tap.
-                        plan.add(new DropTarget(s[0], s[1], "item " + itemId, slot, itemId));
+                        DropTarget dt = new DropTarget(s[0], s[1], "item " + itemId, slot, itemId);
+                        dt.componentId = componentId;
+                        plan.add(dt);
                 }
 
                 return plan;
@@ -1012,6 +1058,8 @@ public final class HumanInput
                 public final String label;
                 public final int slot;
                 public final int itemId;
+                /** Inventory-like container the slot lives in (for re-aiming), or -1. */
+                int componentId = -1;
                 /** Wave value (-1..1) at this slot for the current pass; drives the tap rhythm. */
                 double wave;
                 double key;
@@ -1386,10 +1434,13 @@ public final class HumanInput
                 }
 
                 /**
-                 * Types text with the system keyboard path (the same one the soft keyboard
-                 * uses): one character at a time, gaps riding a sine wave between the
-                 * configured min/max so the rhythm speeds up and slows down like real typing,
-                 * optionally finishing with Enter.
+                 * Types text the way a hardware keyboard reaches the game: every key is a
+                 * separate press and release (KEY_PRESSED + KEY_TYPED at key-down, KEY_RELEASED
+                 * after a human hold), through the same dispatcher a physical keyboard uses.
+                 * Capitals hold the real Shift key around the letter. The gap between keys
+                 * rides a sine wave between the configured min/max (the rhythm speeds up and
+                 * slows down), and each hold time rides a second, detuned cosine, so neither
+                 * the press lengths nor the gaps ever fall into a fixed beat.
                  */
                 boolean type(String text, boolean enter)
                 {
@@ -1409,6 +1460,7 @@ public final class HumanInput
                                                 int max = Math.max(min, config.typeMaxMs());
                                                 double phase = random.nextDouble() * Math.PI * 2.0d;
                                                 double freq = 0.5d + random.nextDouble() * 0.9d;
+                                                KeyRhythm hold = new KeyRhythm();
                                                 if (!sleep(180 + random.nextInt(260)) || aborted(gen))
                                                 {
                                                         return;
@@ -1416,18 +1468,18 @@ public final class HumanInput
                                                 for (int i = 0; i < text.length(); i++)
                                                 {
                                                         final char c = text.charAt(i);
-                                                        Handler h = main;
-                                                        if (h == null || aborted(gen))
+                                                        if (aborted(gen) || !strokeChar(gen, c, hold, i))
                                                         {
                                                                 return;
                                                         }
-                                                        h.post(() -> KeyDispatch.INSTANCE.sendChar(c, 0));
                                                         double wave = (Math.sin(phase + i * freq) + 1.0d) / 2.0d;
                                                         int gap = (int) Math.round(min + (max - min) * wave) + random.nextInt(25);
                                                         if (Character.isUpperCase(c) || c == ' ')
                                                         {
                                                                 gap += 40 + random.nextInt(80);
                                                         }
+                                                        // The hold already used part of the gap: keys overlap in time like real typing.
+                                                        gap = Math.max(12, gap - hold.last);
                                                         if (!sleep(gap) || aborted(gen))
                                                         {
                                                                 return;
@@ -1439,11 +1491,7 @@ public final class HumanInput
                                                         {
                                                                 return;
                                                         }
-                                                        Handler h = main;
-                                                        if (h != null)
-                                                        {
-                                                                h.post(() -> KeyDispatch.INSTANCE.sendKey(java.awt.event.KeyEvent.VK_ENTER, '\n', 0));
-                                                        }
+                                                        strokeKey(gen, java.awt.event.KeyEvent.VK_ENTER, '\n', hold, text.length());
                                                         sleep(60 + random.nextInt(80));
                                                 }
                                         }
@@ -1458,6 +1506,200 @@ public final class HumanInput
                                 busy = false;
                                 return false;
                         }
+                        return true;
+                }
+
+                /**
+                 * One real key stroke on its own (an F-key for a side tab, Escape, Space):
+                 * a short "finding the key" pause, key-down, a human hold, key-up.
+                 */
+                boolean pressKey(int vk, String label)
+                {
+                        if (!running || busy)
+                        {
+                                return false;
+                        }
+                        final int gen = ++generation;
+                        busy = true;
+                        if (config.logInput())
+                        {
+                                Log.i(LOG_TAG, "key '" + label + "' (vk " + vk + ")");
+                        }
+                        try
+                        {
+                                timeline.execute(() ->
+                                {
+                                        try
+                                        {
+                                                // Eyes go to the keyboard, the finger finds the key.
+                                                double ph = random.nextDouble() * 2.0d * Math.PI;
+                                                int find = 90 + (int) Math.round(70.0d * (1.0d + Math.sin(ph))) + random.nextInt(80);
+                                                if (!sleep(find) || aborted(gen))
+                                                {
+                                                        return;
+                                                }
+                                                strokeKey(gen, vk, java.awt.event.KeyEvent.CHAR_UNDEFINED, new KeyRhythm(), 0);
+                                                sleep(40 + random.nextInt(70));
+                                        }
+                                        finally
+                                        {
+                                                busy = false;
+                                        }
+                                });
+                        }
+                        catch (RuntimeException rejected)
+                        {
+                                busy = false;
+                                return false;
+                        }
+                        return true;
+                }
+
+                /**
+                 * Rests the finger on a point without tapping (looking at a skill, reading a
+                 * tooltip): curved approach, then a slow, small Lissajous wander around the
+                 * point for {@code dwellMs}.
+                 */
+                boolean hover(int[] pt, int dwellMs, String label)
+                {
+                        if (!running || busy || pt == null || client.isMenuOpen())
+                        {
+                                return false;
+                        }
+                        final int gen = ++generation;
+                        busy = true;
+                        if (config.logInput())
+                        {
+                                Log.i(LOG_TAG, "hover '" + label + "' at " + pt[0] + "," + pt[1] + " for " + dwellMs + "ms");
+                        }
+                        try
+                        {
+                                timeline.execute(() ->
+                                {
+                                        try
+                                        {
+                                                approachTrail(gen, pt[0], pt[1]);
+                                                if (aborted(gen))
+                                                {
+                                                        return;
+                                                }
+                                                emitMove(gen, pt[0], pt[1]);
+                                                double ax = 1.5d + random.nextDouble() * 3.5d;
+                                                double ay = 1.5d + random.nextDouble() * 3.0d;
+                                                double ratio = 1.0d + random.nextInt(3) + (random.nextDouble() - 0.5d) * 0.2d;
+                                                double phx = random.nextDouble() * 2.0d * Math.PI;
+                                                double phy = random.nextDouble() * 2.0d * Math.PI;
+                                                double omega = 2.0d * Math.PI / (700.0d + random.nextDouble() * 900.0d);
+                                                long t0 = System.currentTimeMillis();
+                                                while (System.currentTimeMillis() - t0 < dwellMs && !aborted(gen))
+                                                {
+                                                        if (!sleep(70 + random.nextInt(90)))
+                                                        {
+                                                                return;
+                                                        }
+                                                        double t = System.currentTimeMillis() - t0;
+                                                        emitMove(gen, pt[0] + (int) Math.round(ax * Math.sin(omega * t + phx)),
+                                                                pt[1] + (int) Math.round(ay * Math.cos(ratio * omega * t + phy)));
+                                                }
+                                        }
+                                        finally
+                                        {
+                                                busy = false;
+                                        }
+                                });
+                        }
+                        catch (RuntimeException rejected)
+                        {
+                                busy = false;
+                                return false;
+                        }
+                        return true;
+                }
+
+                /**
+                 * Hold times for a run of keys: a cosine around the middle of the configured
+                 * range, its own random phase and detuned frequency, plus a little noise.
+                 */
+                private final class KeyRhythm
+                {
+                        final double phase = random.nextDouble() * 2.0d * Math.PI;
+                        final double freq = 0.37d + random.nextDouble() * 0.71d;
+                        int last;
+
+                        int next(int i)
+                        {
+                                int min = Math.max(25, config.keyHoldMinMs());
+                                int max = Math.max(min, config.keyHoldMaxMs());
+                                double w = (Math.cos(phase + i * freq) + 1.0d) / 2.0d;
+                                last = (int) Math.round(min + (max - min) * w) + random.nextInt(18) - 9;
+                                last = Math.max(20, last);
+                                return last;
+                        }
+                }
+
+                /** Character key, with a real Shift press around capitals and shifted symbols. */
+                private boolean strokeChar(int gen, char c, KeyRhythm hold, int index)
+                {
+                        boolean shifted = Character.isUpperCase(c) || "~!@#$%^&*()_+{}|:\"<>?".indexOf(c) >= 0;
+                        int vk = java.awt.event.KeyEvent.getExtendedKeyCodeForChar(c);
+                        if (vk == java.awt.event.KeyEvent.VK_UNDEFINED)
+                        {
+                                vk = c;
+                        }
+                        if (!shifted)
+                        {
+                                return strokeKey(gen, vk, c, hold, index);
+                        }
+                        final int shiftMask = java.awt.event.InputEvent.SHIFT_DOWN_MASK;
+                        if (!post(() -> KeyDispatch.INSTANCE.keyDown(java.awt.event.KeyEvent.VK_SHIFT, java.awt.event.KeyEvent.CHAR_UNDEFINED, shiftMask)))
+                        {
+                                return false;
+                        }
+                        boolean ok = sleep(35 + random.nextInt(55)) && !aborted(gen);
+                        if (ok)
+                        {
+                                final int v = vk;
+                                ok = post(() -> KeyDispatch.INSTANCE.keyDown(v, c, shiftMask));
+                                int held = hold.next(index);
+                                ok = ok && sleep(held);
+                                post(() -> KeyDispatch.INSTANCE.keyUp(v, c, shiftMask));
+                                ok = ok && sleep(20 + random.nextInt(45));
+                        }
+                        // Shift always comes back up, even when stopping.
+                        post(() -> KeyDispatch.INSTANCE.keyUp(java.awt.event.KeyEvent.VK_SHIFT, java.awt.event.KeyEvent.CHAR_UNDEFINED, 0));
+                        return ok && !aborted(gen);
+                }
+
+                /** Key-down, hold for the rhythm's next hold time, key-up. Always releases. */
+                private boolean strokeKey(int gen, int vk, char c, KeyRhythm hold, int index)
+                {
+                        if (!post(() -> KeyDispatch.INSTANCE.keyDown(vk, c, 0)))
+                        {
+                                return false;
+                        }
+                        boolean ok = sleep(hold.next(index));
+                        post(() -> KeyDispatch.INSTANCE.keyUp(vk, c, 0));
+                        return ok && !aborted(gen);
+                }
+
+                private boolean post(Runnable r)
+                {
+                        Handler h = main;
+                        if (h == null)
+                        {
+                                return false;
+                        }
+                        h.post(() ->
+                        {
+                                try
+                                {
+                                        r.run();
+                                }
+                                catch (RuntimeException e)
+                                {
+                                        Log.w(LOG_TAG, "key dispatch failed", e);
+                                }
+                        });
                         return true;
                 }
 
@@ -1785,7 +2027,28 @@ public final class HumanInput
                                         {
                                                 return;
                                         }
-                                        emitBurst(gen, target.x, target.y, MouseEvent.BUTTON1);
+                                        // Look before tapping: the tap here must be "Drop" on this very slot.
+                                        int[] aim = aimSlot(gen, target, "Drop");
+                                        if (aborted(gen))
+                                        {
+                                                return;
+                                        }
+                                        if (aim == null)
+                                        {
+                                                // A plain tap here would not drop it (shift-drop off,
+                                                // slot moved): long-press and pick "Drop" instead.
+                                                if (config.logInput())
+                                                {
+                                                        Log.i(LOG_TAG, "shift-drop: slot " + target.slot + " not lined up, dropping from the menu");
+                                                }
+                                                menuWalk(gen, new int[] {lastX, lastY}, p, "Drop", null);
+                                                if (!sleep(60 + random.nextInt(90)))
+                                                {
+                                                        return;
+                                                }
+                                                continue;
+                                        }
+                                        emitBurst(gen, aim[0], aim[1], MouseEvent.BUTTON1);
                                         if (config.logInput())
                                         {
                                                 Log.i(LOG_TAG, "shift-drop: slot " + target.slot + " " + target.label);
@@ -2133,9 +2396,11 @@ public final class HumanInput
                         {
                                 return;
                         }
-                        // Time scales with distance: a quick flick between neighbouring slots,
-                        // a longer glide across the screen.
-                        int duration = (int) Math.min(460.0d, 45.0d + dist * 1.4d) + random.nextInt(90);
+                        // Fitts' law: movement time grows with log2(1 + distance / target width),
+                        // so a flick between neighbouring slots is quick and a glide across the
+                        // screen takes longer without growing linearly. Random spread on top.
+                        double fitts = Math.log(1.0d + dist / 18.0d) / Math.log(2.0d);
+                        int duration = (int) Math.min(520.0d, 35.0d + 72.0d * fitts) + random.nextInt(70);
                         harmonicPath(gen, lastX, lastY, toX, toY, duration);
                 }
 
@@ -2198,6 +2463,30 @@ public final class HumanInput
                                 double x = x0 + dx * u + px * cross + ux * swell;
                                 double y = y0 + dy * u + py * cross + uy * swell;
                                 emitMove(gen, (int) Math.round(x), (int) Math.round(y));
+                        }
+                        // Settle: longer glides carry a little momentum past the target and
+                        // come back on a damped cosine (A * e^(-k t) * cos(w t)) with a faint
+                        // sideways sine, landing dead on the point like a finger braking.
+                        if (dist > 55 && random.nextInt(100) < 60)
+                        {
+                                double over = Math.min(9.0d, 1.5d + dist * (0.008d + random.nextDouble() * 0.014d));
+                                double side = (random.nextDouble() - 0.5d) * over * 0.6d;
+                                double k = 3.2d + random.nextDouble() * 1.8d;
+                                double w = Math.PI * (1.3d + random.nextDouble() * 0.9d);
+                                int n = 3 + random.nextInt(3);
+                                for (int i = 1; i <= n; i++)
+                                {
+                                        if (!sleep(10 + random.nextInt(9)) || aborted(gen))
+                                        {
+                                                return;
+                                        }
+                                        double t = i / (double) n;
+                                        double decay = Math.exp(-k * t);
+                                        double along = over * decay * Math.cos(w * t);
+                                        double across = side * decay * Math.sin(w * t);
+                                        emitMove(gen, (int) Math.round(x1 + ux * along + px * across),
+                                                (int) Math.round(y1 + uy * along + py * across));
+                                }
                         }
                         if (!sleep(14 + random.nextInt(20)) || aborted(gen))
                         {
@@ -2307,6 +2596,133 @@ public final class HumanInput
                                 }
                         }
                         return null;
+                }
+
+                /**
+                 * Slot aim check: reads the top (left-click) menu entry under the parked finger
+                 * and accepts it only when it is {@code wanted} on exactly this slot (param0 is
+                 * the slot index for inventory entries) and item. On a miss the finger re-aims
+                 * to a fresh point nearer the slot's centre, drawn on a small sine/cosine
+                 * spiral, up to twice. Returns the point to tap, or null when it never lined up.
+                 * Unreadable (slow frame) counts as fine, like the NPC aim check.
+                 */
+                private int[] aimSlot(int gen, DropTarget target, String wanted)
+                {
+                        int[] aim = {target.x, target.y};
+                        for (int attempt = 0; attempt < 3; attempt++)
+                        {
+                                if (attempt > 0)
+                                {
+                                        int[] next = slotCentrePoint(gen, target, attempt);
+                                        if (next == null || aborted(gen))
+                                        {
+                                                return aborted(gen) ? null : aim;
+                                        }
+                                        harmonicPath(gen, aim[0], aim[1], next[0], next[1], 40 + random.nextInt(40));
+                                        emitMove(gen, next[0], next[1]);
+                                        aim = next;
+                                }
+                                Boolean ok = callClient(gen, () ->
+                                {
+                                        if (client.isMenuOpen())
+                                        {
+                                                return null;
+                                        }
+                                        MenuEntry[] entries = client.getMenuEntries();
+                                        if (entries == null || entries.length == 0)
+                                        {
+                                                return Boolean.FALSE;
+                                        }
+                                        MenuEntry top = entries[entries.length - 1];
+                                        String option = top.getOption() == null ? "" : Text.removeTags(top.getOption());
+                                        boolean itemOk = top.getItemId() <= 0 || top.getItemId() == target.itemId;
+                                        return option.equalsIgnoreCase(wanted) && top.getParam0() == target.slot && itemOk;
+                                }, 28 + random.nextInt(18));
+                                if (aborted(gen))
+                                {
+                                        return null;
+                                }
+                                if (ok == null || ok)
+                                {
+                                        return aim;
+                                }
+                                if (config.logInput())
+                                {
+                                        Log.i(LOG_TAG, "slot aim: tap would not '" + wanted + "' slot " + target.slot + ", re-aiming");
+                                }
+                        }
+                        return null;
+                }
+
+                /** A point near the slot's centre: radius shrinks with each attempt, angle random. */
+                private int[] slotCentrePoint(int gen, DropTarget target, int attempt)
+                {
+                        if (target.componentId < 0)
+                        {
+                                return null;
+                        }
+                        return callClient(gen, () ->
+                        {
+                                Widget inv = client.getWidget(target.componentId);
+                                Widget[] kids = inv == null ? null : inv.getChildren();
+                                if (kids == null || target.slot >= kids.length || kids[target.slot] == null)
+                                {
+                                        return null;
+                                }
+                                Widget c = kids[target.slot];
+                                Point loc = c.getCanvasLocation();
+                                if (loc == null || c.getWidth() <= 0 || c.getHeight() <= 0)
+                                {
+                                        return null;
+                                }
+                                double r = (attempt == 1 ? 0.18d : 0.08d) * Math.min(c.getWidth(), c.getHeight());
+                                double th = random.nextDouble() * 2.0d * Math.PI;
+                                int rx = loc.getX() + c.getWidth() / 2 + (int) Math.round(r * Math.cos(th));
+                                int ry = loc.getY() + c.getHeight() / 2 + (int) Math.round(r * Math.sin(th));
+                                return toStretched(rx, ry);
+                        }, 0);
+                }
+
+                /**
+                 * Runs {@code read} on the client thread after an optional settle pause and
+                 * waits up to 250ms for the answer. Null on timeout or abort.
+                 */
+                private <T> T callClient(int gen, java.util.function.Supplier<T> read, int settleMs)
+                {
+                        if (settleMs > 0 && (!sleep(settleMs) || aborted(gen)))
+                        {
+                                return null;
+                        }
+                        final CountDownLatch done = new CountDownLatch(1);
+                        final java.util.concurrent.atomic.AtomicReference<T> out = new java.util.concurrent.atomic.AtomicReference<>();
+                        clientThread.invokeLater(() ->
+                        {
+                                try
+                                {
+                                        out.set(read.get());
+                                }
+                                catch (RuntimeException e)
+                                {
+                                        Log.w(LOG_TAG, "client read failed", e);
+                                }
+                                finally
+                                {
+                                        done.countDown();
+                                }
+                        });
+                        try
+                        {
+                                if (!done.await(250, TimeUnit.MILLISECONDS))
+                                {
+                                        return null;
+                                }
+                        }
+                        catch (InterruptedException e)
+                        {
+                                Thread.currentThread().interrupt();
+                                return null;
+                        }
+                        return out.get();
                 }
 
                 /**

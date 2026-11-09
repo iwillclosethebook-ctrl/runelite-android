@@ -10,11 +10,13 @@ import net.runelite.api.NPC;
 import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.AreaSoundEffectPlayed;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.DecorativeObjectDespawned;
 import net.runelite.api.events.DecorativeObjectSpawned;
 import net.runelite.api.events.GameObjectDespawned;
 import net.runelite.api.events.GameObjectSpawned;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.events.GraphicsObjectCreated;
 import net.runelite.api.events.GroundObjectDespawned;
 import net.runelite.api.events.GroundObjectSpawned;
 import net.runelite.api.events.HitsplatApplied;
@@ -22,6 +24,7 @@ import net.runelite.api.events.ItemDespawned;
 import net.runelite.api.events.ItemSpawned;
 import net.runelite.api.events.MenuEntryAdded;
 import net.runelite.api.events.OverheadTextChanged;
+import net.runelite.api.events.ProjectileMoved;
 import net.runelite.api.events.SoundEffectPlayed;
 import net.runelite.api.events.VarbitChanged;
 import net.runelite.api.events.WallObjectDespawned;
@@ -178,6 +181,27 @@ public class MobileDevToolsPlugin extends Plugin
         public void onGameTick(GameTick event)
         {
                 DevRecorder.INSTANCE.onTick(client);
+        }
+
+        /** Every frame: impacts and effect ends are written the frame they happen. */
+        @Subscribe
+        public void onClientTick(ClientTick event)
+        {
+                DevRecorder.INSTANCE.onClientTick(client);
+        }
+
+        /** Projectile launched: written the moment the client creates it. */
+        @Subscribe
+        public void onProjectileMoved(ProjectileMoved event)
+        {
+                DevRecorder.INSTANCE.onProjectile(client, event.getProjectile());
+        }
+
+        /** Spot effect on a tile: written the moment it appears. */
+        @Subscribe
+        public void onGraphicsObjectCreated(GraphicsObjectCreated event)
+        {
+                DevRecorder.INSTANCE.onGraphicsObject(client, event.getGraphicsObject());
         }
 
         @Subscribe

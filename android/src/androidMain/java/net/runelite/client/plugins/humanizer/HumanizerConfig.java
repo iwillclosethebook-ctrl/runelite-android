@@ -25,10 +25,13 @@ public interface HumanizerConfig extends Config
         @ConfigSection(name = "Camera", description = "Humanized camera turns", position = 2)
         String cameraSection = "camera";
 
+        @ConfigSection(name = "Keys & tabs", description = "F-key tab switching, key hold times and XP checks", position = 4)
+        String keysSection = "keys";
+
         @ConfigSection(name = "Walking & typing", description = "Minimap walking and keyboard rhythm", position = 3)
         String walkSection = "walk";
 
-        @ConfigSection(name = "Debug", description = "Logging", position = 4)
+        @ConfigSection(name = "Debug", description = "Logging", position = 5)
         String debugSection = "debug";
 
         // ---- Reactions ----
@@ -203,6 +206,55 @@ public interface HumanizerConfig extends Config
         default int typeMaxMs()
         {
                 return 210;
+        }
+
+        // ---- Keys & tabs ----
+
+        @ConfigItem(keyName = "useFKeys", name = "Use F-keys for tabs", description = "Switch side tabs with the F-key you bound to them in the game's settings (read from the game), like a desktop player. Unbound tabs are tapped instead.", section = keysSection, position = 0)
+        default boolean useFKeys()
+        {
+                return true;
+        }
+
+        @Range(min = 0, max = 100)
+        @ConfigItem(keyName = "fKeyChance", name = "F-key vs tap (%)", description = "How often a bound tab is opened with its F-key instead of tapping the tab button", section = keysSection, position = 1)
+        default int fKeyChance()
+        {
+                return 80;
+        }
+
+        @Range(min = 25, max = 400)
+        @ConfigItem(keyName = "keyHoldMinMs", name = "Key hold min (ms)", description = "Shortest time a key stays pressed down (press and release are separate events, like a real keyboard)", section = keysSection, position = 2)
+        default int keyHoldMinMs()
+        {
+                return 55;
+        }
+
+        @Range(min = 25, max = 600)
+        @ConfigItem(keyName = "keyHoldMaxMs", name = "Key hold max (ms)", description = "Longest time a key stays pressed down. Clamped to at least the minimum.", section = keysSection, position = 3)
+        default int keyHoldMaxMs()
+        {
+                return 140;
+        }
+
+        @ConfigItem(keyName = "xpChecks", name = "Check XP now and then", description = "Every few minutes, while the script waits, open the Skills tab, look at the skill being trained, then go back to the inventory", section = keysSection, position = 4)
+        default boolean xpChecks()
+        {
+                return true;
+        }
+
+        @Range(min = 1, max = 120)
+        @ConfigItem(keyName = "xpCheckMinMin", name = "XP check every min (minutes)", description = "Shortest time between XP checks", section = keysSection, position = 5)
+        default int xpCheckMinMin()
+        {
+                return 4;
+        }
+
+        @Range(min = 1, max = 240)
+        @ConfigItem(keyName = "xpCheckMaxMin", name = "XP check every max (minutes)", description = "Longest time between XP checks. Clamped to at least the minimum.", section = keysSection, position = 6)
+        default int xpCheckMaxMin()
+        {
+                return 13;
         }
 
         // ---- Debug ----

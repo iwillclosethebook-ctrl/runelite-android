@@ -248,6 +248,7 @@ public class AutoFishPlugin extends Plugin
                         () -> currentSpot != null ? spotTarget(currentSpot) : nextSpot != null ? spotTarget(nextSpot) : null,
                         () -> huntCenter(client.getLocalPlayer()),
                         () -> config.huntRadius());
+                input.setTrainedSkill(net.runelite.api.Skill.FISHING);
                 input.start();
                 overlayManager.add(overlay);
                 overlayManager.add(huntOverlay);

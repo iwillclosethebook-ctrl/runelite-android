@@ -207,59 +207,176 @@ public final class GameHelpers
         /** VarClientID.TOPLEVEL_PANEL value of the inventory tab (same index Microbot's Rs2Tab uses). */
         public static final int INVENTORY_TAB_INDEX = 3;
 
+        /** Side tab indices, as the TOPLEVEL_PANEL client variable numbers them (same as Microbot's InterfaceTab). */
+        public static final int TAB_COMBAT = 0;
+        public static final int TAB_SKILLS = 1;
+        public static final int TAB_QUESTS = 2;
+        public static final int TAB_EQUIPMENT = 4;
+        public static final int TAB_PRAYER = 5;
+        public static final int TAB_MAGIC = 6;
+
+        /**
+         * The varbit that stores which key the player bound to each side tab (Settings >
+         * Controls > Keybinds), by tab index. Value 0 = no key, 1-12 = F1-F12, 13 = Escape.
+         */
+        private static final int[] TAB_KEY_VARBITS = {
+                net.runelite.api.gameval.VarbitID.STONE_COMBAT_KEY,   // 0 combat
+                net.runelite.api.gameval.VarbitID.STONE_STATS_KEY,    // 1 skills
+                net.runelite.api.gameval.VarbitID.STONE_JOURNAL_KEY,  // 2 quests
+                net.runelite.api.gameval.VarbitID.STONE_INV_KEY,      // 3 inventory
+                net.runelite.api.gameval.VarbitID.STONE_WORN_KEY,     // 4 equipment
+                net.runelite.api.gameval.VarbitID.STONE_PRAYER_KEY,   // 5 prayer
+                net.runelite.api.gameval.VarbitID.STONE_MAGIC_KEY,    // 6 magic
+                net.runelite.api.gameval.VarbitID.STONE_CLANCHAT_KEY, // 7 chat-channel
+                net.runelite.api.gameval.VarbitID.STONE_ACCOUNT_KEY,  // 8 account
+                net.runelite.api.gameval.VarbitID.STONE_FRIENDS_KEY,  // 9 friends
+                net.runelite.api.gameval.VarbitID.STONE_LOGOUT_KEY,   // 10 logout
+                net.runelite.api.gameval.VarbitID.STONE_OPTIONS1_KEY, // 11 settings
+                net.runelite.api.gameval.VarbitID.STONE_OPTIONS2_KEY, // 12 emotes
+                net.runelite.api.gameval.VarbitID.STONE_MUSIC_KEY,    // 13 music
+        };
+
+        /** Which side tab is open right now (TOPLEVEL_PANEL client variable). */
+        public static int openTab(Client client)
+        {
+                return client.getVarcIntValue(net.runelite.api.gameval.VarClientID.TOPLEVEL_PANEL);
+        }
+
         /** True when the inventory side tab is the open one (read from the client, like Microbot does). */
         public static boolean inventoryTabOpen(Client client)
         {
-                return client.getVarcIntValue(net.runelite.api.gameval.VarClientID.TOPLEVEL_PANEL) == INVENTORY_TAB_INDEX;
+                return openTab(client) == INVENTORY_TAB_INDEX;
         }
 
         /**
-         * Makes sure the inventory is showing before dropping / eating. Which tab is open is
-         * read the way Microbot reads it (the TOPLEVEL_PANEL client variable, 3 = inventory).
-         * Microbot then switches tabs with an internal client script or an F-key; we tap the
-         * inventory tab button instead, with the usual simulated finger. The button is found
-         * by its fixed interface ID for each layout (resizable classic, resizable modern,
-         * fixed), falling back to any visible widget with an "Inventory" action.
-         *
-         * @return true when the inventory is open now; false when a tab tap was sent (check again next tick)
+         * The key code the player bound to a side tab in the game's keybind settings, read
+         * from the game itself, or -1 when the tab has no key. F1-F12 map to VK_F1..VK_F12,
+         * 13 is Escape.
          */
+        public static int tabHotkey(Client client, int tabIndex)
+        {
+                if (tabIndex < 0 || tabIndex >= TAB_KEY_VARBITS.length)
+                {
+                        return -1;
+                }
+                int v = client.getVarbitValue(TAB_KEY_VARBITS[tabIndex]);
+                if (v >= 1 && v <= 12)
+                {
+                        return java.awt.event.KeyEvent.VK_F1 + (v - 1);
+                }
+                if (v == 13)
+                {
+                        return java.awt.event.KeyEvent.VK_ESCAPE;
+                }
+                return -1;
+        }
+
+        /** "F4", "Esc", or "none" — for the overlay / logs. */
+        public static String hotkeyLabel(int vk)
+        {
+                if (vk >= java.awt.event.KeyEvent.VK_F1 && vk <= java.awt.event.KeyEvent.VK_F12)
+                {
+                        return "F" + (vk - java.awt.event.KeyEvent.VK_F1 + 1);
+                }
+                return vk == java.awt.event.KeyEvent.VK_ESCAPE ? "Esc" : "none";
+        }
+
+        /** Makes sure the inventory is showing before dropping / eating. See {@link #openTab(Client, HumanInput, int)}. */
         public static boolean openInventoryTab(Client client, HumanInput input)
         {
                 if (inventoryTabOpen(client))
                 {
                         return true;
                 }
-                net.runelite.api.widgets.Widget tab = null;
-                int[] ids = {
-                        net.runelite.api.gameval.InterfaceID.ToplevelOsrsStretch.STONE3,
-                        net.runelite.api.gameval.InterfaceID.ToplevelPreEoc.STONE3,
-                        net.runelite.api.gameval.InterfaceID.Toplevel.STONE3,
-                };
-                for (int id : ids)
+                if (!openTab(client, input, INVENTORY_TAB_INDEX))
                 {
-                        net.runelite.api.widgets.Widget w = client.getWidget(id);
-                        if (w != null && !w.isHidden())
-                        {
-                                tab = w;
-                                break;
-                        }
-                }
-                if (tab == null)
-                {
-                        tab = findWidgetWithAction(client, "Inventory");
-                }
-                int[] p = tab == null ? null : input.widgetPoint(tab);
-                if (p == null)
-                {
-                        // No tab button to tap (inventory pinned open by the mobile layout?): carry on if it is visible.
+                        // No tab button and no key (inventory pinned open by the mobile layout?): carry on if it is visible.
                         net.runelite.api.widgets.Widget inv = client.getWidget(net.runelite.api.widgets.ComponentID.INVENTORY_CONTAINER);
                         return inv != null && !inv.isHidden();
                 }
-                if (!input.isBusy())
+                return false;
+        }
+
+        /**
+         * Switches to a side tab. Which tab is open is read the way Microbot reads it (the
+         * TOPLEVEL_PANEL client variable). The switch itself is a real input, never an
+         * internal call: when the player has an F-key bound to that tab (read from the
+         * game's keybind varbits) it is usually pressed — a separate key-down and key-up
+         * with a human hold — and otherwise, or now and then anyway, the tab button is
+         * tapped with the simulated finger. The button is found by its fixed interface ID
+         * in each layout (resizable classic, resizable modern, fixed), falling back to any
+         * visible widget with the tab's action.
+         *
+         * @return true when a key/tap was sent or the tab is already open; false when there
+         *         was no way to switch
+         */
+        public static boolean openTab(Client client, HumanInput input, int tabIndex)
+        {
+                if (openTab(client) == tabIndex)
                 {
-                        input.tap(p, "inventory tab");
+                        return true;
+                }
+                if (input.isBusy())
+                {
+                        return true; // try again next tick
+                }
+                HumanizerConfig cfg = input.config();
+                int vk = tabHotkey(client, tabIndex);
+                boolean keyFirst = vk > 0 && cfg.useFKeys() && input.random().nextInt(100) < cfg.fKeyChance();
+                if (keyFirst)
+                {
+                        input.pressKey(vk, "tab " + tabIndex + " (" + hotkeyLabel(vk) + ")");
+                        return true;
+                }
+                int[] p = tabButtonPoint(client, input, tabIndex);
+                if (p != null)
+                {
+                        input.tap(p, "tab " + tabIndex);
+                        return true;
+                }
+                if (vk > 0 && cfg.useFKeys())
+                {
+                        input.pressKey(vk, "tab " + tabIndex + " (" + hotkeyLabel(vk) + ")");
+                        return true;
                 }
                 return false;
+        }
+
+        private static final String[] TAB_ACTIONS = {
+                "Combat Options", "Skills", "Quest List", "Inventory", "Worn Equipment", "Prayer", "Magic",
+        };
+
+        /** A tap point on a side tab's button, or null when none is showing. */
+        public static int[] tabButtonPoint(Client client, HumanInput input, int tabIndex)
+        {
+                String field = "STONE" + tabIndex;
+                Class<?>[] layouts = {
+                        net.runelite.api.gameval.InterfaceID.ToplevelOsrsStretch.class,
+                        net.runelite.api.gameval.InterfaceID.ToplevelPreEoc.class,
+                        net.runelite.api.gameval.InterfaceID.Toplevel.class,
+                };
+                net.runelite.api.widgets.Widget tab = null;
+                for (Class<?> layout : layouts)
+                {
+                        try
+                        {
+                                net.runelite.api.widgets.Widget w = client.getWidget(layout.getField(field).getInt(null));
+                                if (w != null && !w.isHidden())
+                                {
+                                        tab = w;
+                                        break;
+                                }
+                        }
+                        catch (ReflectiveOperationException ignored)
+                        {
+                                // this layout has no such stone
+                        }
+                }
+                if (tab == null && tabIndex < TAB_ACTIONS.length)
+                {
+                        tab = findWidgetWithAction(client, TAB_ACTIONS[tabIndex]);
+                }
+                return tab == null ? null : input.widgetPoint(tab);
         }
 
         /** First visible widget (any interface, any depth) with the given action, or null. */

@@ -106,6 +106,33 @@ object KeyDispatch {
         ))
     }
 
+    /**
+     * The first half of a real key stroke: KEY_PRESSED (and KEY_TYPED when the key yields
+     * a character), exactly what [sendAndroidKeyEvent] emits for a hardware keyboard's
+     * ACTION_DOWN. Pair with [keyUp] after a human hold time; nothing is released here.
+     */
+    fun keyDown(vkCode: Int, keyChar: Char = KeyEvent.CHAR_UNDEFINED, modifiers: Int = 0) {
+        val mods = ModifierState.modifierMask() or modifiers
+        val source = dummyComponent()
+        val now = System.currentTimeMillis()
+        dispatchAwtEvent(KeyEvent(source, KeyEvent.KEY_PRESSED, now, mods, vkCode, keyChar, keyLocationForVk(vkCode)))
+        if (keyChar != KeyEvent.CHAR_UNDEFINED) {
+            dispatchAwtEvent(KeyEvent(source, KeyEvent.KEY_TYPED, now, mods, KeyEvent.VK_UNDEFINED, keyChar))
+        }
+    }
+
+    /** The second half of a key stroke: KEY_RELEASED, like a hardware ACTION_UP. */
+    fun keyUp(vkCode: Int, keyChar: Char = KeyEvent.CHAR_UNDEFINED, modifiers: Int = 0) {
+        val mods = ModifierState.modifierMask() or modifiers
+        dispatchAwtEvent(KeyEvent(dummyComponent(), KeyEvent.KEY_RELEASED, System.currentTimeMillis(), mods,
+            vkCode, keyChar, keyLocationForVk(vkCode)))
+    }
+
+    private fun keyLocationForVk(vkCode: Int): Int = when (vkCode) {
+        KeyEvent.VK_SHIFT, KeyEvent.VK_CONTROL, KeyEvent.VK_ALT -> KeyEvent.KEY_LOCATION_LEFT
+        else -> KeyEvent.KEY_LOCATION_STANDARD
+    }
+
     fun sendBackspace() {
         sendKey(KeyEvent.VK_BACK_SPACE, '\b')
     }

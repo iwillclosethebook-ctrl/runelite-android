@@ -168,6 +168,7 @@ public class AutoMinePlugin extends Plugin
                         () -> config.huntRadius());
                 parseKeep();
                 parseCenter();
+                input.setTrainedSkill(net.runelite.api.Skill.MINING);
                 input.start();
                 WebWalker.preload();
                 overlayManager.add(overlay);

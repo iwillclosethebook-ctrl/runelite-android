@@ -881,6 +881,325 @@ public final class DevRecorder
                 write(close(sb));
         }
 
+        // ------------------------------------------------------------------ instant effects (client thread, every frame)
+
+        /** Live projectile -> {first-seen game cycle, first-seen ms, predicted end cycle, landed(0/1)}. */
+        private final java.util.IdentityHashMap<Projectile, long[]> liveProjectiles = new java.util.IdentityHashMap<>();
+        /** Live graphics object -> {first-seen game cycle, first-seen ms}. */
+        private final java.util.IdentityHashMap<GraphicsObject, long[]> liveGfx = new java.util.IdentityHashMap<>();
+        private final Map<Integer, Timing> projectileTimings = new TreeMap<>();
+        private final Map<Integer, Timing> gfxTimings = new TreeMap<>();
+
+        /** Running min / mean / max of a few numbers per effect ID, for the summary. */
+        private static final class Timing
+        {
+                int count;
+                final double[] sum = new double[4];
+                final double[] min = {Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE, Double.MAX_VALUE};
+                final double[] max = {-Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE, -Double.MAX_VALUE};
+                final TreeSet<String> notes = new TreeSet<>();
+
+                void add(int i, double v)
+                {
+                        sum[i] += v;
+                        min[i] = Math.min(min[i], v);
+                        max[i] = Math.max(max[i], v);
+                }
+
+                String json(String... names)
+                {
+                        StringBuilder b = new StringBuilder("{\"count\": ").append(count);
+                        for (int i = 0; i < names.length; i++)
+                        {
+                                if (count == 0 || min[i] == Double.MAX_VALUE)
+                                {
+                                        continue;
+                                }
+                                b.append(", \"").append(names[i]).append("\": {\"min\": ").append(round(min[i]))
+                                        .append(", \"avg\": ").append(round(sum[i] / count))
+                                        .append(", \"max\": ").append(round(max[i])).append('}');
+                        }
+                        if (!notes.isEmpty())
+                        {
+                                b.append(", \"shapes\": [");
+                                boolean first = true;
+                                for (String n : notes)
+                                {
+                                        b.append(first ? "" : ", ").append('"').append(n).append('"');
+                                        first = false;
+                                }
+                                b.append(']');
+                        }
+                        return b.append('}').toString();
+                }
+
+                private static String round(double v)
+                {
+                        return String.valueOf(Math.round(v * 100.0d) / 100.0d);
+                }
+        }
+
+        private long ms()
+        {
+                return System.currentTimeMillis() - startedAt;
+        }
+
+        private static boolean nearPlayer(Client client, WorldPoint p)
+        {
+                Player me = client.getLocalPlayer();
+                WorldPoint here = me == null ? null : me.getWorldLocation();
+                return here != null && p != null && p.getPlane() == here.getPlane()
+                        && Math.max(Math.abs(p.getX() - here.getX()), Math.abs(p.getY() - here.getY())) <= RADIUS;
+        }
+
+        /**
+         * A projectile was launched or retargeted (ProjectileMoved). The first sighting is
+         * written at once, with everything needed to predict it: source and target points
+         * (tiles and sub-tile local units), source / target actor, start/end game cycles,
+         * the delay before it leaves, flight time in ms, distance and speed in tiles per
+         * game tick, heights and slope, and when (ms and game tick) it will land.
+         */
+        public void onProjectile(Client client, Projectile p)
+        {
+                if (!recording || p == null || liveProjectiles.containsKey(p))
+                {
+                        return;
+                }
+                if (!nearPlayer(client, p.getTargetPoint()) && !nearPlayer(client, p.getSourcePoint()))
+                {
+                        return;
+                }
+                int cycle = client.getGameCycle();
+                liveProjectiles.put(p, new long[] {cycle, System.currentTimeMillis(), p.getEndCycle(), 0});
+                projectiles.add(p.getId());
+
+                int flightCycles = p.getEndCycle() - p.getStartCycle();
+                double flightMs = flightCycles * 20.0d;
+                double distTiles = -1;
+                LocalPoint tgt = p.getTarget();
+                if (tgt != null)
+                {
+                        distTiles = Math.hypot(tgt.getX() - p.getX1(), tgt.getY() - p.getY1()) / 128.0d;
+                }
+                double tilesPerTick = flightCycles > 0 && distTiles >= 0 ? distTiles / (flightCycles / 30.0d) : -1;
+                long landsInMs = Math.max(0, (p.getEndCycle() - cycle) * 20L);
+
+                StringBuilder sb = obj("proj+");
+                num(sb, "tick", tick);
+                num(sb, "ms", ms());
+                num(sb, "cycle", cycle);
+                num(sb, "id", p.getId());
+                sb.append(',');
+                point(sb, "from", p.getSourcePoint());
+                sb.append(',');
+                point(sb, "to", p.getTargetPoint());
+                sourceTarget(sb, "src", p.getSourceActor());
+                if (p.getTargetActor() == client.getLocalPlayer())
+                {
+                        sb.append(",\"dst\":\"me\"");
+                }
+                else
+                {
+                        sourceTarget(sb, "dst", p.getTargetActor());
+                }
+                bool(sb, "atTile", p.getTargetActor() == null);
+                sb.append(",\"fromLocal\":[").append(p.getX1()).append(',').append(p.getY1()).append(']');
+                if (tgt != null)
+                {
+                        sb.append(",\"toLocal\":[").append(tgt.getX()).append(',').append(tgt.getY()).append(']');
+                }
+                num(sb, "startCycle", p.getStartCycle());
+                num(sb, "endCycle", p.getEndCycle());
+                num(sb, "delayMs", Math.max(0, (p.getStartCycle() - cycle) * 20L));
+                num(sb, "flightMs", Math.round(flightMs));
+                sb.append(",\"distTiles\":").append(Math.round(distTiles * 100.0d) / 100.0d);
+                sb.append(",\"tilesPerTick\":").append(Math.round(tilesPerTick * 100.0d) / 100.0d);
+                num(sb, "landsInMs", landsInMs);
+                num(sb, "landsAtTick", tick + (landsInMs + 599) / 600);
+                num(sb, "startHeight", p.getStartHeight());
+                num(sb, "endHeight", p.getEndHeight());
+                num(sb, "slope", p.getSlope());
+                num(sb, "startPos", p.getStartPos());
+                write(close(sb));
+
+                Timing t = projectileTimings.computeIfAbsent(p.getId(), k -> new Timing());
+                t.count++;
+                t.add(0, flightMs);
+                if (tilesPerTick >= 0)
+                {
+                        t.add(1, tilesPerTick);
+                }
+                if (distTiles >= 0)
+                {
+                        t.add(2, distTiles);
+                }
+                t.add(3, Math.max(0, (p.getStartCycle() - cycle) * 20.0d));
+                if (t.notes.size() < 8)
+                {
+                        t.notes.add((p.getTargetActor() == null ? "tile" : "actor") + " h" + p.getStartHeight() + "->" + p.getEndHeight()
+                                + " slope" + p.getSlope());
+                }
+        }
+
+        /** A spot effect appeared on a tile (GraphicsObjectCreated): written at once. */
+        public void onGraphicsObject(Client client, GraphicsObject g)
+        {
+                if (!recording || g == null || liveGfx.containsKey(g))
+                {
+                        return;
+                }
+                LocalPoint lp = g.getLocation();
+                WorldPoint at = lp == null ? null : WorldPoint.fromLocal(client, lp);
+                if (!nearPlayer(client, at))
+                {
+                        return;
+                }
+                int cycle = client.getGameCycle();
+                liveGfx.put(g, new long[] {cycle, System.currentTimeMillis()});
+                graphics.add(g.getId());
+                StringBuilder sb = obj("gfx+");
+                num(sb, "tick", tick);
+                num(sb, "ms", ms());
+                num(sb, "cycle", cycle);
+                num(sb, "id", g.getId());
+                sb.append(',');
+                point(sb, "pos", at);
+                if (lp != null)
+                {
+                        sb.append(",\"local\":[").append(lp.getX()).append(',').append(lp.getY()).append(']');
+                }
+                num(sb, "z", g.getZ());
+                num(sb, "startCycle", g.getStartCycle());
+                num(sb, "delayMs", Math.max(0, (g.getStartCycle() - cycle) * 20L));
+                write(close(sb));
+                gfxTimings.computeIfAbsent(g.getId(), k -> new Timing()).count++;
+        }
+
+        /**
+         * Every client frame (20ms): catches projectiles the event missed, writes the exact
+         * frame a projectile reaches its end cycle ("proj!" = impact) and when it is removed,
+         * and when each graphics object finishes ("gfx-", with its real lifetime).
+         */
+        public void onClientTick(Client client)
+        {
+                if (!recording)
+                {
+                        return;
+                }
+                int cycle = client.getGameCycle();
+                java.util.Set<Projectile> present = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                for (Projectile p : client.getProjectiles())
+                {
+                        if (p == null)
+                        {
+                                continue;
+                        }
+                        present.add(p);
+                        if (!liveProjectiles.containsKey(p))
+                        {
+                                onProjectile(client, p);
+                        }
+                        long[] st = liveProjectiles.get(p);
+                        if (st != null && st[3] == 0 && cycle >= p.getEndCycle())
+                        {
+                                st[3] = 1;
+                                landed(client, p, st, cycle, "proj!");
+                        }
+                }
+                java.util.Iterator<Map.Entry<Projectile, long[]>> it = liveProjectiles.entrySet().iterator();
+                while (it.hasNext())
+                {
+                        Map.Entry<Projectile, long[]> e = it.next();
+                        if (!present.contains(e.getKey()))
+                        {
+                                if (e.getValue()[3] == 0)
+                                {
+                                        landed(client, e.getKey(), e.getValue(), cycle, "proj-");
+                                }
+                                it.remove();
+                        }
+                }
+
+                WorldView wv = client.getTopLevelWorldView();
+                java.util.Set<GraphicsObject> gPresent = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+                if (wv != null)
+                {
+                        for (GraphicsObject g : wv.getGraphicsObjects())
+                        {
+                                if (g == null)
+                                {
+                                        continue;
+                                }
+                                if (!liveGfx.containsKey(g))
+                                {
+                                        onGraphicsObject(client, g);
+                                }
+                                if (!g.finished())
+                                {
+                                        gPresent.add(g);
+                                }
+                        }
+                }
+                java.util.Iterator<Map.Entry<GraphicsObject, long[]>> gi = liveGfx.entrySet().iterator();
+                while (gi.hasNext())
+                {
+                        Map.Entry<GraphicsObject, long[]> e = gi.next();
+                        if (gPresent.contains(e.getKey()))
+                        {
+                                continue;
+                        }
+                        GraphicsObject g = e.getKey();
+                        long lifeMs = System.currentTimeMillis() - e.getValue()[1];
+                        long lifeCycles = cycle - e.getValue()[0];
+                        StringBuilder sb = obj("gfx-");
+                        num(sb, "tick", tick);
+                        num(sb, "ms", ms());
+                        num(sb, "cycle", cycle);
+                        num(sb, "id", g.getId());
+                        num(sb, "lifeMs", lifeMs);
+                        num(sb, "lifeCycles", lifeCycles);
+                        LocalPoint lp = g.getLocation();
+                        if (lp != null)
+                        {
+                                sb.append(',');
+                                point(sb, "pos", WorldPoint.fromLocal(client, lp));
+                        }
+                        write(close(sb));
+                        Timing t = gfxTimings.computeIfAbsent(g.getId(), k -> new Timing());
+                        t.add(0, lifeMs);
+                        t.add(1, lifeCycles * 20.0d);
+                        gi.remove();
+                }
+        }
+
+        private void landed(Client client, Projectile p, long[] st, int cycle, String type)
+        {
+                long afterMs = System.currentTimeMillis() - st[1];
+                StringBuilder sb = obj(type);
+                num(sb, "tick", tick);
+                num(sb, "ms", ms());
+                num(sb, "cycle", cycle);
+                num(sb, "id", p.getId());
+                num(sb, "msSinceSeen", afterMs);
+                num(sb, "cyclesLate", cycle - p.getEndCycle());
+                num(sb, "predictedEndCycle", st[2]);
+                num(sb, "endCycle", p.getEndCycle());
+                sb.append(',');
+                point(sb, "to", p.getTargetPoint());
+                if (p.getTargetActor() != null)
+                {
+                        sourceTarget(sb, "dst", p.getTargetActor());
+                        if (p.getTargetActor() == client.getLocalPlayer())
+                        {
+                                bool(sb, "onMe", true);
+                        }
+                        sb.append(',');
+                        point(sb, "dstPos", p.getTargetActor().getWorldLocation());
+                }
+                sb.append(",\"at\":[").append(Math.round(p.getX())).append(',').append(Math.round(p.getY())).append(',').append(Math.round(p.getZ())).append(']');
+                write(close(sb));
+        }
+
         // ------------------------------------------------------------------ summary
 
         private void clearSummary()
@@ -898,6 +1217,10 @@ public final class DevRecorder
                 varbits.clear();
                 regions.clear();
                 damageTiles.clear();
+                liveProjectiles.clear();
+                liveGfx.clear();
+                projectileTimings.clear();
+                gfxTimings.clear();
         }
 
         private String buildSummary()
@@ -918,6 +1241,24 @@ public final class DevRecorder
                 sb.append("\n  },\n");
                 sb.append("  \"projectiles\": ").append(projectiles).append(",\n");
                 sb.append("  \"graphicsObjects\": ").append(graphics).append(",\n");
+                sb.append("  \"projectileTimings\": {");
+                first = true;
+                for (Map.Entry<Integer, Timing> e : projectileTimings.entrySet())
+                {
+                        sb.append(first ? "\n" : ",\n");
+                        first = false;
+                        sb.append("    \"").append(e.getKey()).append("\": ").append(e.getValue().json("flightMs", "tilesPerTick", "distTiles", "delayMs"));
+                }
+                sb.append("\n  },\n");
+                sb.append("  \"graphicsTimings\": {");
+                first = true;
+                for (Map.Entry<Integer, Timing> e : gfxTimings.entrySet())
+                {
+                        sb.append(first ? "\n" : ",\n");
+                        first = false;
+                        sb.append("    \"").append(e.getKey()).append("\": ").append(e.getValue().json("lifeMs", "lifeMsByCycles"));
+                }
+                sb.append("\n  },\n");
                 sb.append("  \"playerAnims\": ").append(playerAnims).append(",\n");
                 sb.append("  \"playerSpotAnims\": ").append(playerSpotAnims).append(",\n");
                 sb.append("  \"groundItems\": ").append(items).append(",\n");
