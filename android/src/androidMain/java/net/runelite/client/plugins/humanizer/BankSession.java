@@ -434,17 +434,19 @@ public final class BankSession
                 {
                         return fail("Withdrawing took too long");
                 }
-                // Withdraw as items, never notes (noted food cannot be eaten).
+                // Withdraw as items, never notes (noted food cannot be eaten). Same check Microbot
+                // uses — the BANK_WITHDRAWNOTES varbit — and the same toggle button
+                // (Bankmain.NOTE), pressed with our own tap; the varbit confirms the switch.
                 if (client.getVarbitValue(VarbitID.BANK_WITHDRAWNOTES) == 1 && phase == 0 && needIndex < needs.size())
                 {
-                        Widget item = findBankButton("Item");
-                        int[] p = input.widgetPoint(item);
+                        Widget toggle = client.getWidget(InterfaceID.Bankmain.NOTE);
+                        int[] p = input.widgetPoint(toggle);
                         if (p == null || ++noteFixTries > 3)
                         {
-                                return fail("The bank is set to withdraw notes — switch it to 'Item'");
+                                return fail("Could not switch the bank from 'Note' to 'Item'");
                         }
                         input.tap(p, "withdraw as item");
-                        wait = 1 + input.random().nextInt(2);
+                        wait = 2 + input.random().nextInt(2);
                         return BUSY;
                 }
 
@@ -691,24 +693,6 @@ public final class BankSession
                 return c != null && s != null && s.width > 0 && s.height > 0
                         && s.y >= c.y && s.y + s.height <= c.y + c.height
                         && s.x >= c.x && s.x + s.width <= c.x + c.width;
-        }
-
-        /** A bank interface button found by its action text ("Item", "Note", ...), or null. */
-        private Widget findBankButton(String action)
-        {
-                for (int child = 0; child < 120; child++)
-                {
-                        Widget w = client.getWidget(InterfaceID.Bankmain.UNIVERSE >>> 16, child);
-                        if (w == null || w.isHidden())
-                        {
-                                continue;
-                        }
-                        if (GameHelpers.hasAction(w.getActions(), action))
-                        {
-                                return w;
-                        }
-                }
-                return null;
         }
 
         // ---------------------------------------------------------------- depositing
