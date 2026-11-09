@@ -104,6 +104,20 @@ class AutoFightOverlay extends OverlayPanel
                         }
                 }
 
+                panelComponent.getChildren().add(LineComponent.builder()
+                        .left("Status")
+                        .right(plugin.getStatus())
+                        .build());
+
+                if (config.autoEat() || config.bankEnabled())
+                {
+                        panelComponent.getChildren().add(LineComponent.builder()
+                                .left("Food")
+                                .right(String.valueOf(plugin.getFoodCount()))
+                                .rightColor(plugin.getFoodCount() == 0 ? Color.RED : Color.WHITE)
+                                .build());
+                }
+
                 String center = plugin.getCenterLabel();
                 if (center != null)
                 {

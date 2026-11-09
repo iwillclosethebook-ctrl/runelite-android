@@ -1,51 +1,23 @@
 package net.runelite.client.plugins.autowoodcut;
 
-import android.os.Handler;
-import android.os.Looper;
-import android.util.Log;
-import android.view.ViewConfiguration;
 import com.google.inject.Provides;
-import java.awt.Canvas;
-import java.awt.Component;
-import java.awt.Container;
-import java.awt.Rectangle;
-import java.awt.Shape;
-import java.awt.Window;
-import java.awt.event.InputEvent;
-import java.awt.event.MouseEvent;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.function.IntConsumer;
 import javax.inject.Inject;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
-import net.runelite.api.Constants;
 import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
-import net.runelite.api.InventoryID;
-import net.runelite.api.Item;
-import net.runelite.api.ItemContainer;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.ObjectComposition;
-import net.runelite.api.Perspective;
 import net.runelite.api.Player;
-import net.runelite.api.Point;
-import net.runelite.api.Scene;
-import net.runelite.api.Tile;
-import net.runelite.api.TileObject;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
@@ -54,9 +26,6 @@ import net.runelite.api.events.ClientTick;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuEntryAdded;
-import net.runelite.api.gameval.InterfaceID;
-import net.runelite.api.widgets.ComponentID;
-import net.runelite.api.widgets.Widget;
 import net.runelite.client.Notifier;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
@@ -65,53 +34,38 @@ import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
-import net.runelite.client.plugins.gamedata.BankLocation;
 import net.runelite.client.plugins.gamedata.LocalReach;
-import net.runelite.client.plugins.gamedata.PathFinder;
-import net.runelite.client.plugins.gamedata.Transport;
-import net.runelite.client.plugins.gamedata.WorldCollision;
-import net.runelite.client.plugins.mobile.MobileHitTest;
-import net.runelite.client.plugins.mobile.MobileInventoryOverlay;
-import net.runelite.client.plugins.mobile.MobileScrollbars;
+import net.runelite.client.plugins.humanizer.BankSession;
+import net.runelite.client.plugins.humanizer.GameHelpers;
+import net.runelite.client.plugins.humanizer.HumanInput;
+import net.runelite.client.plugins.humanizer.HumanizerConfig;
+import net.runelite.client.plugins.humanizer.Target;
+import net.runelite.client.plugins.humanizer.Targets;
+import net.runelite.client.plugins.humanizer.WebWalker;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.util.Text;
-import net.runelite.mp.ui.bridge.ModifierState;
 
 /**
  * Highlights trees, counts logs, and optionally auto-chops, then banks or drops the logs
  * when the inventory fills up.
  *
- * <p>Built on the same touch engine as AutoFish and AutoFight: every action is a replayed
- * finger gesture (two parking moves, a real-time press, the four-event burst), placed at a
- * fresh point on the target each time, steered by a rotating input style, with
- * trigonometric drag paths and Lissajous idle wander. Before every plain tap the parked
- * finger's left-click option is read, and the finger re-aims if the tap would not chop
- * that exact tree. Lost taps are noticed after two ticks and fixed straight away.</p>
- *
- * <h2>Banking</h2>
- * Banks come from the shared {@link BankLocation} table (taken from Microbot). The nearest
- * usable bank is walked to with minimap taps along a path that bends on a sine wave whose
- * width and phase are rolled per trip; once a booth or chest is in reach it is tapped
- * (long-press + "Bank" when that is not its left-click option), everything not on the keep
- * list is deposited ("Deposit inventory" when nothing is kept, otherwise long-press +
- * "Deposit-All" per item), and the walk back to the heat centre bends on a fresh wave.
- *
- * <h2>Trees</h2>
- * Trees are recognised by name and chop action, which stumps do not have, so a felled
- * tree drops out of the list on the tick it falls. Tree, log and location data come from
- * Microbot-Hub ({@link WoodcuttingTree}).
+ * <p>All input goes through the shared {@link HumanInput} engine (settings in the
+ * Humanizer plugin): every tap is a replayed finger gesture aimed at a fresh point on the
+ * tree, checked before it is committed, with off-screen trees brought into view by a
+ * slow, slightly off-centre camera turn. Only trees the player can actually walk up to
+ * are considered. Banking walks a real path ({@link WebWalker}) to the nearest reachable
+ * bank and back.</p>
  */
 @PluginDescriptor(
         name = "AutoWoodcut",
-        description = "Highlight trees, count logs, and auto-chop/bank/drop with simulated touch input and humanized camera turns",
-        tags = {"woodcutting", "tree", "logs", "bank", "highlight", "counter", "mobile", "camera", "humanizer"},
+        description = "Highlight trees, count logs, and auto-chop/bank/drop with simulated touch input",
+        tags = {"woodcutting", "tree", "logs", "bank", "highlight", "counter", "mobile", "humanizer", "script"},
         enabledByDefault = false
 )
 public class AutoWoodcutPlugin extends Plugin
 {
         private static final String SET_CENTER = "WC-Set centre";
         private static final String CLEAR_CENTER = "WC-Clear centre";
-
         private static final String LOG_TAG = "AutoWoodcut";
 
         /** Ticks to wait for a chop to start before trying again. */
@@ -119,27 +73,6 @@ public class AutoWoodcutPlugin extends Plugin
 
         /** After this many failed attempts on one tree, pause and let pickNext choose again. */
         private static final int MAX_TREE_ATTEMPTS = 4;
-
-        /** Camera yaw/pitch units. */
-        private static final int JAU14_MASK = 0x3FFF;
-        private static final double JAU14_PER_RADIAN = 16384.0d / (2.0d * Math.PI);
-
-        /** Turns smaller than this (JAU) are not worth a camera move. */
-        private static final int CAMERA_DEADZONE = 150;
-
-        /** Height of the context menu's "Choose Option" header, in real canvas pixels. */
-        private static final int MENU_HEADER_HEIGHT = 19;
-
-        private static final int PITCH_MIN = 128;
-        private static final int PITCH_MAX = 383;
-
-        /** Ground-misclick correction window. */
-        private static final int MISCORRECT_MIN_MS = 50;
-        private static final int MISCORRECT_MAX_MS = 97;
-
-        private static final long RESCUE_COOLDOWN_MS = 15_000L;
-
-        private static final int EMPTY_ITEM_ID = 6512;
 
         /** Chop actions recognised on any tree, besides the selected tree's own action. */
         private static final String[] CHOP_ACTIONS = {"Chop down", "Chop", "Cut"};
@@ -174,11 +107,15 @@ public class AutoWoodcutPlugin extends Plugin
         @Inject
         private ItemManager itemManager;
 
-        private final List<GameObject> trees = new ArrayList<>();
-        private final Set<Integer> keepIds = new HashSet<>();
-        private final Set<String> keepNames = new HashSet<>(); // lowercase, matched as "contains"
+        private HumanInput input;
+        private WebWalker walker;
+        private BankSession bankSession;
 
+        private final List<GameObject> trees = new ArrayList<>();
+        private GameHelpers.ItemList keepList = new GameHelpers.ItemList("", true, 1);
         private final Random random = new Random();
+        private final Map<String, Long> unreachableUntil = new HashMap<>();
+        private LocalReach reach;
 
         private GameObject currentTree;
         private GameObject nextTree;
@@ -199,7 +136,6 @@ public class AutoWoodcutPlugin extends Plugin
         private int stalledDropPasses;
 
         private int waitTicks;
-        /** Set when a tap visibly did nothing; the next attempt goes out at once with a short pad. */
         private boolean missNoticed;
         private GameObject pendingTree;
         private int pendingTicks;
@@ -208,82 +144,11 @@ public class AutoWoodcutPlugin extends Plugin
 
         private WorldPoint huntCenter; // null = centre on the player
 
-        // ---- banking ----
-        private enum BankStep
-        {
-                NONE,
-                TO_BANK,
-                OPENING,
-                DEPOSITING,
-                RETURNING
-        }
-
-        private BankStep bankStep = BankStep.NONE;
-        private BankLocation bank;
-        private GameObject bankObject;
+        /** Walking back from the bank to the work area. */
+        private boolean returning;
         private WorldPoint returnPoint;
-        private int stepTicks;
         /** No usable bank: stay put until the inventory is no longer full. */
         private boolean bankBlocked;
-        // ---- web walking (ShortestPath data: collision map + doors/stairs/ladders) ----
-        private static final int WALK_ARRIVED = 0;
-        private static final int WALK_BUSY = 1;
-        private static final int WALK_FAILED = 2;
-        private final java.util.concurrent.ExecutorService pathExecutor = Executors.newSingleThreadExecutor(r ->
-        {
-                Thread t = new Thread(r, LOG_TAG + "-Path");
-                t.setDaemon(true);
-                return t;
-        });
-        private volatile PathFinder.Result pathResult;
-        private volatile boolean pathPending;
-        private volatile int pathGeneration;
-        private boolean waitingForMap;
-        private List<PathFinder.Step> path;
-        private int pathIndex;
-        private List<WorldPoint> walkTargets = Collections.emptyList();
-        private int walkArrive;
-        private int walkMaxCost;
-        private final Set<Transport> bannedTransports = new HashSet<>();
-        private List<Transport> usableTransports;
-        private long usableTransportsAt;
-        private Transport activeTransport;
-        private int transportTicks;
-        private TileObject transportObject;
-        private WorldPoint walkGoal;
-        private WorldPoint lastPos;
-        private int stillTicks;
-        private int recomputes;
-        private double walkPhase;
-        /** Banks considered for the current trip, in the order handed to the path finder. */
-        private List<BankLocation> bankCandidates = Collections.emptyList();
-
-        // ---- reachability ----
-        private LocalReach reach;
-        private final java.util.Map<String, Long> unreachableUntil = new java.util.HashMap<>();
-
-        // ---- input style rotation ----
-        private volatile Persona persona;
-        private volatile long personaChangedAt;
-        private volatile long nextPersonaSwitchAt;
-
-        // ---- camera ----
-        private int logsSinceTurn;
-        private int nextTurnLogs;
-        private CameraAnim yawAnim;
-        private CameraAnim pitchAnim;
-        private long lastRescueMs;
-
-        // ---- menu scan (client thread <-> timeline thread) ----
-        private volatile boolean menuScanPending;
-        private volatile long menuScanRequestedAt;
-        private volatile String menuScanWanted;
-        private volatile int[] menuActionPoint;    // stretched canvas coords
-        private volatile int menuActionKind;       // 0 none, 1 wanted row, 2 dismiss point
-
-        private long nextHoverDriftAt;
-
-        private final TouchEngine touch = new TouchEngine();
 
         @Provides
         AutoWoodcutConfig provideConfig(ConfigManager configManager)
@@ -294,25 +159,17 @@ public class AutoWoodcutPlugin extends Plugin
         @Override
         protected void startUp()
         {
+                input = new HumanInput(client, clientThread, configManager.getConfig(HumanizerConfig.class), LOG_TAG);
+                walker = new WebWalker(client, input, LOG_TAG);
+                bankSession = new BankSession(client, itemManager, input, walker);
+                input.setFocus(
+                        () -> currentTree != null ? treeTarget(currentTree) : nextTree != null ? treeTarget(nextTree) : null,
+                        () -> huntCenter(client.getLocalPlayer()),
+                        () -> config.huntRadius());
                 parseKeep();
                 parseCenter();
-                logsSinceTurn = 0;
-                rollNextTurnLogs();
-                pickInitialPersona();
-                nextHoverDriftAt = 0L;
-                lastRescueMs = 0L;
-                yawAnim = null;
-                pitchAnim = null;
-                menuScanPending = false;
-                menuScanWanted = null;
-                menuActionPoint = null;
-                menuActionKind = 0;
-                touch.start();
-                // Load the walking data in the background so the first bank trip does not wait.
-                WorldCollision.startLoading();
-                Thread preload = new Thread(Transport::all, LOG_TAG + "-Transports");
-                preload.setDaemon(true);
-                preload.start();
+                input.start();
+                WebWalker.preload();
                 overlayManager.add(overlay);
                 overlayManager.add(treeOverlay);
                 overlayManager.add(huntOverlay);
@@ -322,7 +179,7 @@ public class AutoWoodcutPlugin extends Plugin
         @Override
         protected void shutDown()
         {
-                touch.stop();
+                input.stop();
                 overlayManager.remove(overlay);
                 overlayManager.remove(treeOverlay);
                 overlayManager.remove(huntOverlay);
@@ -332,58 +189,18 @@ public class AutoWoodcutPlugin extends Plugin
                 choppingTree = null;
                 clearAutomation();
                 resetSession();
-                yawAnim = null;
-                pitchAnim = null;
-                menuScanPending = false;
-                menuScanWanted = null;
-                menuActionPoint = null;
-                menuActionKind = 0;
         }
 
         // ---------------------------------------------------------------- state
 
         private void parseKeep()
         {
-                keepIds.clear();
-                keepNames.clear();
-                for (String part : config.keepItems().split(","))
-                {
-                        String p = part.trim();
-                        if (p.isEmpty())
-                        {
-                                continue;
-                        }
-                        try
-                        {
-                                keepIds.add(Integer.parseInt(p));
-                        }
-                        catch (NumberFormatException e)
-                        {
-                                keepNames.add(p.toLowerCase(Locale.ROOT));
-                        }
-                }
+                keepList = new GameHelpers.ItemList(config.keepItems(), true, 1);
         }
 
-        private boolean isKept(int rawId)
+        private boolean isKept(int itemId)
         {
-                int id = itemManager.canonicalize(rawId);
-                if (keepIds.contains(id) || keepIds.contains(rawId))
-                {
-                        return true;
-                }
-                if (keepNames.isEmpty())
-                {
-                        return false;
-                }
-                String name = itemName(id).toLowerCase(Locale.ROOT);
-                for (String k : keepNames)
-                {
-                        if (name.contains(k))
-                        {
-                                return true;
-                        }
-                }
-                return false;
+                return keepList.contains(itemManager, itemId);
         }
 
         private void parseCenter()
@@ -418,7 +235,7 @@ public class AutoWoodcutPlugin extends Plugin
                 {
                         return huntCenter;
                 }
-                if (bankStep != BankStep.NONE && returnPoint != null)
+                if ((bankSession != null && bankSession.isActive() || returning) && returnPoint != null)
                 {
                         return returnPoint;
                 }
@@ -440,48 +257,20 @@ public class AutoWoodcutPlugin extends Plugin
                         + " r" + config.huntRadius();
         }
 
-        /** Centre tile for the world-space range overlay; null when not determinable. */
         WorldPoint getHuntCenterWorld()
         {
                 return huntCenter(client.getLocalPlayer());
         }
 
-        /** The composition the player sees (impostors resolved), or null. */
-        private ObjectComposition composition(int id)
+        private Target treeTarget(GameObject tree)
         {
-                ObjectComposition comp = client.getObjectDefinition(id);
-                if (comp != null && comp.getImpostorIds() != null)
-                {
-                        ObjectComposition imp = comp.getImpostor();
-                        if (imp != null)
-                        {
-                                comp = imp;
-                        }
-                }
-                return comp;
-        }
-
-        private static boolean hasAction(ObjectComposition comp, String wanted)
-        {
-                String[] actions = comp.getActions();
-                if (actions == null || wanted == null)
-                {
-                        return false;
-                }
-                for (String a : actions)
-                {
-                        if (a != null && wanted.equalsIgnoreCase(Text.removeTags(a)))
-                        {
-                                return true;
-                        }
-                }
-                return false;
+                return Targets.object(tree, () -> trees.contains(tree));
         }
 
         private boolean isTree(GameObject obj)
         {
-                ObjectComposition comp = composition(obj.getId());
-                if (comp == null || !config.tree().matchesName(Text.removeTags(String.valueOf(comp.getName()))))
+                ObjectComposition comp = GameHelpers.composition(client, obj.getId());
+                if (comp == null || !config.tree().matchesName(GameHelpers.name(comp)))
                 {
                         return false;
                 }
@@ -491,19 +280,19 @@ public class AutoWoodcutPlugin extends Plugin
         /** The chop action to use on this tree (the configured tree's own action first), or null. */
         private String treeAction(GameObject obj)
         {
-                ObjectComposition comp = composition(obj.getId());
+                ObjectComposition comp = GameHelpers.composition(client, obj.getId());
                 if (comp == null)
                 {
                         return null;
                 }
                 String own = config.tree().getAction();
-                if (hasAction(comp, own))
+                if (GameHelpers.hasAction(comp.getActions(), own))
                 {
                         return own;
                 }
                 for (String a : CHOP_ACTIONS)
                 {
-                        if (hasAction(comp, a))
+                        if (GameHelpers.hasAction(comp.getActions(), a))
                         {
                                 return a;
                         }
@@ -511,152 +300,35 @@ public class AutoWoodcutPlugin extends Plugin
                 return null;
         }
 
-        /** True when {@code wanted} is the object's left-click (first) option. */
-        private boolean actionIsDefaultAction(TileObject obj, String wanted)
+        private static String objectKey(GameObject obj)
         {
-                ObjectComposition comp = composition(obj.getId());
-                if (comp == null || wanted == null)
+                WorldPoint wp = obj.getWorldLocation();
+                return obj.getId() + "@" + wp;
+        }
+
+        private boolean isMarkedUnreachable(GameObject obj)
+        {
+                Long until = unreachableUntil.get(objectKey(obj));
+                if (until == null)
                 {
                         return false;
                 }
-                String[] actions = comp.getActions();
-                if (actions == null)
+                if (until > System.currentTimeMillis())
                 {
-                        return false;
+                        return true;
                 }
-                for (String a : actions)
-                {
-                        if (a != null && !a.isEmpty())
-                        {
-                                return wanted.equalsIgnoreCase(Text.removeTags(a));
-                        }
-                }
+                unreachableUntil.remove(objectKey(obj));
                 return false;
         }
 
-        /** True when a menu entry is an option on exactly this object (id and tile). */
-        private static boolean objectMatches(MenuEntry entry, TileObject obj)
+        private void markUnreachable(GameObject obj)
         {
-                if (entry == null || obj == null || entry.getIdentifier() != obj.getId())
+                if (unreachableUntil.size() > 64)
                 {
-                        return false;
+                        unreachableUntil.clear();
                 }
-                int bx;
-                int by;
-                if (obj instanceof GameObject)
-                {
-                        Point min = ((GameObject) obj).getSceneMinLocation();
-                        if (min == null)
-                        {
-                                return false;
-                        }
-                        bx = min.getX();
-                        by = min.getY();
-                }
-                else
-                {
-                        LocalPoint lp = obj.getLocalLocation();
-                        if (lp == null)
-                        {
-                                return false;
-                        }
-                        bx = lp.getSceneX();
-                        by = lp.getSceneY();
-                }
-                return entry.getParam0() == bx && entry.getParam1() == by;
-        }
-
-        /** The object's model hull for tap placement (clickbox for kinds without one). */
-        private static Shape hullOf(TileObject obj)
-        {
-                if (obj instanceof GameObject)
-                {
-                        return ((GameObject) obj).getConvexHull();
-                }
-                if (obj instanceof net.runelite.api.WallObject)
-                {
-                        return ((net.runelite.api.WallObject) obj).getConvexHull();
-                }
-                if (obj instanceof net.runelite.api.DecorativeObject)
-                {
-                        return ((net.runelite.api.DecorativeObject) obj).getConvexHull();
-                }
-                if (obj instanceof net.runelite.api.GroundObject)
-                {
-                        return ((net.runelite.api.GroundObject) obj).getConvexHull();
-                }
-                return obj.getClickbox();
-        }
-
-        /** True when a menu row belongs to the scan target (or there is no specific target). */
-        private static boolean menuEntryIsTarget(MenuEntry entry, Object target)
-        {
-                return target == null || (target instanceof TileObject && objectMatches(entry, (TileObject) target));
-        }
-
-        /** Something the touch engine may still aim at: a live tree or the bank being opened. */
-        private boolean isLiveTarget(TileObject obj)
-        {
-                return obj != null && (trees.contains(obj) || obj == bankObject || obj == transportObject);
-        }
-
-        /**
-         * Every GameObject whose south-west tile lies within {@code radius} tiles (scene
-         * space) of {@code centre} on the current plane. Each multi-tile object is returned
-         * once.
-         */
-        private List<GameObject> objectsAround(LocalPoint centre, int radius)
-        {
-                List<GameObject> out = new ArrayList<>();
-                WorldView wv = client.getTopLevelWorldView();
-                if (wv == null || centre == null)
-                {
-                        return out;
-                }
-                Scene scene = wv.getScene();
-                if (scene == null)
-                {
-                        return out;
-                }
-                Tile[][][] tiles = scene.getTiles();
-                int plane = wv.getPlane();
-                if (tiles == null || plane < 0 || plane >= tiles.length)
-                {
-                        return out;
-                }
-                int cx = centre.getSceneX();
-                int cy = centre.getSceneY();
-                Tile[][] layer = tiles[plane];
-                for (int x = Math.max(0, cx - radius); x <= Math.min(layer.length - 1, cx + radius); x++)
-                {
-                        Tile[] column = layer[x];
-                        if (column == null)
-                        {
-                                continue;
-                        }
-                        for (int y = Math.max(0, cy - radius); y <= Math.min(column.length - 1, cy + radius); y++)
-                        {
-                                Tile tile = column[y];
-                                if (tile == null)
-                                {
-                                        continue;
-                                }
-                                GameObject[] objects = tile.getGameObjects();
-                                if (objects == null)
-                                {
-                                        continue;
-                                }
-                                for (GameObject obj : objects)
-                                {
-                                        if (obj != null && obj.getSceneMinLocation() != null
-                                                && obj.getSceneMinLocation().equals(tile.getSceneLocation()))
-                                        {
-                                                out.add(obj);
-                                        }
-                                }
-                        }
-                }
-                return out;
+                unreachableUntil.put(objectKey(obj), System.currentTimeMillis() + 120_000L);
+                input.log("unreachable, skipping for 2 minutes: " + objectKey(obj));
         }
 
         /** Rebuilds the tree list from the live scene. Felled trees lose their chop action and drop out. */
@@ -673,20 +345,18 @@ public class AutoWoodcutPlugin extends Plugin
                 {
                         return;
                 }
-
                 reach = LocalReach.compute(client);
                 WorldPoint centre = huntCenter(local);
                 LocalPoint centreLocal = centre == null ? null : LocalPoint.fromWorld(wv, centre);
                 boolean ranged = config.useHuntRange() && centreLocal != null;
                 int radius = ranged ? config.huntRadius() + 2 : 15;
-                List<GameObject> around = objectsAround(ranged ? centreLocal : local.getLocalLocation(), radius);
-                for (GameObject obj : around)
+                for (GameObject obj : GameHelpers.gameObjectsAround(client, ranged ? centreLocal : local.getLocalLocation(), radius))
                 {
                         if (ranged && !inHuntRange(obj, centre))
                         {
                                 continue;
                         }
-                        if (isTree(obj) && canInteract(obj))
+                        if (isTree(obj) && !isMarkedUnreachable(obj) && GameHelpers.canInteract(reach, obj))
                         {
                                 trees.add(obj);
                         }
@@ -723,14 +393,19 @@ public class AutoWoodcutPlugin extends Plugin
                 dropping = false;
                 lastDropCount = -1;
                 stalledDropPasses = 0;
-                endBanking();
+                if (bankSession != null)
+                {
+                        bankSession.stop();
+                }
+                if (walker != null)
+                {
+                        walker.stop();
+                }
+                returning = false;
                 bankBlocked = false;
         }
 
-        /**
-         * Works out which tree is being chopped (the one the last tap went to, while the
-         * axe is swinging) and which tree comes next.
-         */
+        /** Which tree is being chopped (the last tapped one, while the axe swings) and which comes next. */
         private void updateTrees()
         {
                 Player local = client.getLocalPlayer();
@@ -740,7 +415,6 @@ public class AutoWoodcutPlugin extends Plugin
                         nextTree = null;
                         return;
                 }
-
                 if (local.getAnimation() != -1)
                 {
                         lastAnimTick = tickCount;
@@ -762,14 +436,12 @@ public class AutoWoodcutPlugin extends Plugin
                 {
                         choppingTree = chopped;
                 }
-
                 if (!isValidNext(nextTree))
                 {
                         nextTree = pickNext(local);
                 }
         }
 
-        /** The tree next to the player (chopping one the player started by hand), or null. */
         private GameObject adjacentTree(Player local)
         {
                 WorldPoint me = local.getWorldLocation();
@@ -792,7 +464,6 @@ public class AutoWoodcutPlugin extends Plugin
                 return obj != null && obj != currentTree && trees.contains(obj);
         }
 
-        /** Nearest tree, or a random pick from the nearest few when a tree pool is set. */
         private GameObject pickNext(Player local)
         {
                 WorldPoint me = local.getWorldLocation();
@@ -811,7 +482,6 @@ public class AutoWoodcutPlugin extends Plugin
                 candidates.sort((a, b) -> Integer.compare(
                         a.getWorldLocation().distanceTo(me),
                         b.getWorldLocation().distanceTo(me)));
-
                 int pool = Math.min(Math.max(config.treePool(), 1), candidates.size());
                 return candidates.get(pool <= 1 ? 0 : random.nextInt(pool));
         }
@@ -825,174 +495,11 @@ public class AutoWoodcutPlugin extends Plugin
                 fullNotified = false;
         }
 
-        // ---------------------------------------------------------------- input styles
-
-        /** Where on the tree's clickbox the simulated finger aims. */
-        private enum Placement
-        {
-                /** Gaussian around the hull centre — quick, confident taps. */
-                GAUSSIAN_CENTER,
-                /** Anywhere inside the hull — sloppy, wandering taps. */
-                UNIFORM_HULL,
-                /** Biased toward the lower body — a lazy, tired finger. */
-                LOWER_BIAS,
-                /** Middle 60% of the hull — careful, deliberate taps (also used for menu long-presses). */
-                TIGHT_BOX
-        }
-
-        /**
-         * A bundle of input habits. Rotation between these is what makes the "input method"
-         * change every few minutes: the tap placement strategy, the pacing, the misclick rate
-         * and the menu preference all move together, the way a real player's hands settle
-         * into a rhythm and then drift out of it.
-         */
-        private static final class Persona
-        {
-                final String label;
-                final Placement placement;
-                final int tapDurMin;
-                final int tapDurMax;
-                final int menuChance;      // % of clicks done via long-press + menu
-                final int approachChance;  // % of taps preceded by a hover approach trail
-                final int misclickChance;  // base % (scaled by the config setting)
-                final int padMin;          // ms of extra reaction padding
-                final int padMax;
-                final int hoverChance;     // % chance of an idle hover drift while chopping
-                final int doubleTapChance; // % chance the first retry is a quick double-tap
-
-                Persona(String label, Placement placement,
-                        int tapDurMin, int tapDurMax, int menuChance, int approachChance, int misclickChance,
-                        int padMin, int padMax, int hoverChance, int doubleTapChance)
-                {
-                        this.label = label;
-                        this.placement = placement;
-                        this.tapDurMin = tapDurMin;
-                        this.tapDurMax = tapDurMax;
-                        this.menuChance = menuChance;
-                        this.approachChance = approachChance;
-                        this.misclickChance = misclickChance;
-                        this.padMin = padMin;
-                        this.padMax = padMax;
-                        this.hoverChance = hoverChance;
-                        this.doubleTapChance = doubleTapChance;
-                }
-        }
-
-        private static final List<Persona> PERSONAS = Collections.unmodifiableList(Arrays.asList(
-                new Persona("Swift tapper", Placement.GAUSSIAN_CENTER, 45, 95, 0, 10, 6, 40, 220, 55, 12),
-                new Persona("Cautious menuer", Placement.TIGHT_BOX, 90, 160, 70, 40, 9, 150, 500, 40, 6),
-                new Persona("Wandering hover", Placement.UNIFORM_HULL, 60, 130, 15, 70, 14, 90, 380, 80, 9),
-                new Persona("Weary grinder", Placement.LOWER_BIAS, 110, 210, 30, 30, 12, 250, 700, 45, 15)
-        ));
-
-        private void pickInitialPersona()
-        {
-                persona = PERSONAS.get(random.nextInt(PERSONAS.size()));
-                personaChangedAt = System.currentTimeMillis();
-                scheduleNextPersonaSwitch();
-        }
-
-        private void scheduleNextPersonaSwitch()
-        {
-                int min = Math.max(config.methodRotationMinSec(), 60);
-                int max = Math.max(config.methodRotationMaxSec(), min);
-                int holdSec = min + (max > min ? random.nextInt(max - min + 1) : 0);
-                nextPersonaSwitchAt = System.currentTimeMillis() + holdSec * 1000L;
-        }
-
-        /** Swaps the input style when its time is up; called once per game tick. */
-        private void maybeRotatePersona()
-        {
-                if (!config.rotateInputMethod())
-                {
-                        return;
-                }
-                if (System.currentTimeMillis() < nextPersonaSwitchAt)
-                {
-                        return;
-                }
-                Persona current = persona;
-                Persona next = current;
-                for (int i = 0; i < 4 && next == current; i++)
-                {
-                        next = PERSONAS.get(random.nextInt(PERSONAS.size()));
-                }
-                persona = next;
-                personaChangedAt = System.currentTimeMillis();
-                scheduleNextPersonaSwitch();
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "input style -> " + next.label);
-                }
-        }
-
-        String getPersonaLabel()
-        {
-                Persona p = persona;
-                return p == null ? "-" : p.label;
-        }
-
-        long getMethodSwitchInSeconds()
-        {
-                if (!config.rotateInputMethod())
-                {
-                        return -1;
-                }
-                long ms = nextPersonaSwitchAt - System.currentTimeMillis();
-                return Math.max(0, (ms + 999) / 1000);
-        }
-
-        /** Effective ground-misclick chance: the config setting scaled by the active style. */
-        private int effectiveMisclickChance(Persona p)
-        {
-                int base = config.misclickChance();
-                if (base <= 0 || p == null)
-                {
-                        return 0;
-                }
-                return Math.max(1, (int) Math.round(base * p.misclickChance / 10.0d));
-        }
-
-        private int personaTapDur(Persona p)
-        {
-                if (p == null)
-                {
-                        return 60 + random.nextInt(60);
-                }
-                int min = p.tapDurMin;
-                int max = Math.max(p.tapDurMax, min);
-                return min + random.nextInt(max - min + 1);
-        }
-
-        private int personaPad(Persona p)
-        {
-                if (p == null)
-                {
-                        return 60 + random.nextInt(240);
-                }
-                int min = p.padMin;
-                int max = Math.max(p.padMax, min);
-                return min + random.nextInt(max - min + 1);
-        }
-
         // ---------------------------------------------------------------- automation
 
-        /** Random pause before an automated click, so the cadence is not metronomic. */
-        private int reactionDelay()
-        {
-                int min = Math.max(config.reactionMin(), 0);
-                int max = Math.max(config.reactionMax(), min);
-                int delay = min + (max > min ? random.nextInt(max - min + 1) : 0);
-                if (config.hesitateChance() > 0 && random.nextInt(100) < config.hesitateChance())
-                {
-                        delay += 1 + random.nextInt(3);
-                }
-                return delay;
-        }
-
         /**
-         * One decision per tick, on the client thread: a bank trip in progress comes first,
-         * then a full inventory, and while a tree is being chopped nothing else is attempted.
+         * One decision per tick, on the client thread: a bank trip or the walk back comes
+         * first, then a full inventory, and while a tree is being chopped nothing else is tried.
          */
         private void automate()
         {
@@ -1001,25 +508,70 @@ public class AutoWoodcutPlugin extends Plugin
                 {
                         return;
                 }
-
                 if (waitTicks > 0)
                 {
                         waitTicks--;
                         return;
                 }
-
-                if (bankStep != BankStep.NONE)
+                if (!config.autoChop())
                 {
-                        if (!config.autoChop())
+                        if (bankSession.isActive() || returning)
                         {
-                                endBanking();
-                                return;
+                                clearAutomation();
                         }
-                        tickBanking(local);
+                        if (GameHelpers.inventoryFull(client) && !fullNotified)
+                        {
+                                fullNotified = true;
+                                notifier.notify(config.notifyFull(), "Inventory full");
+                        }
+                        else if (!GameHelpers.inventoryFull(client))
+                        {
+                                fullNotified = false;
+                        }
                         return;
                 }
 
-                boolean full = inventoryFull();
+                if (bankSession.isActive())
+                {
+                        int r = bankSession.tick(local, reach);
+                        if (r == BankSession.DONE)
+                        {
+                                returning = true;
+                                walker.start(Collections.singletonList(returnPoint), 2, config.bankMaxDistance() * 3 + 120);
+                                waitTicks = 1 + random.nextInt(3);
+                        }
+                        else if (r == BankSession.FAILED)
+                        {
+                                bankBlocked = true;
+                                notifier.notify(config.notifyFull(), String.valueOf(bankSession.failure()));
+                        }
+                        return;
+                }
+                if (returning)
+                {
+                        WorldPoint here = local.getWorldLocation();
+                        boolean inRange = returnPoint == null || (returnPoint.getPlane() == here.getPlane()
+                                && Math.max(Math.abs(here.getX() - returnPoint.getX()), Math.abs(here.getY() - returnPoint.getY()))
+                                <= Math.max(2, config.huntRadius() / 2));
+                        int w = inRange && !trees.isEmpty() ? WebWalker.ARRIVED : walker.tick(local);
+                        if (w == WebWalker.ARRIVED)
+                        {
+                                returning = false;
+                                walker.stop();
+                                nextTree = null;
+                                waitTicks = input.reactionDelay();
+                        }
+                        else if (w == WebWalker.FAILED)
+                        {
+                                returning = false;
+                                walker.stop();
+                                bankBlocked = true;
+                                notifier.notify(config.notifyFull(), "No walkable route back to the trees");
+                        }
+                        return;
+                }
+
+                boolean full = GameHelpers.inventoryFull(client);
                 AutoWoodcutConfig.FullInventoryMode mode = config.fullInvMode();
                 if (!full)
                 {
@@ -1030,14 +582,22 @@ public class AutoWoodcutPlugin extends Plugin
                 {
                         pendingTree = null;
                         pendingTicks = 0;
-
-                        if (config.autoChop() && mode == AutoWoodcutConfig.FullInventoryMode.DROP)
+                        if (mode == AutoWoodcutConfig.FullInventoryMode.DROP)
                         {
                                 dropping = true;
                         }
-                        else if (config.autoChop() && mode == AutoWoodcutConfig.FullInventoryMode.BANK && !bankBlocked)
+                        else if (mode == AutoWoodcutConfig.FullInventoryMode.BANK && !bankBlocked)
                         {
-                                startBanking(local);
+                                returnPoint = huntCenter != null ? huntCenter : local.getWorldLocation();
+                                if (!bankSession.begin(local, config.bankMaxDistance(), this::isKept, Collections.emptyList()))
+                                {
+                                        bankBlocked = true;
+                                        notifier.notify(config.notifyFull(), "Inventory full — " + bankSession.failure());
+                                }
+                                else
+                                {
+                                        waitTicks = input.reactionDelay();
+                                }
                                 return;
                         }
                         else
@@ -1053,13 +613,12 @@ public class AutoWoodcutPlugin extends Plugin
 
                 if (dropping)
                 {
-                        if (touch.isBusy())
+                        if (input.isBusy())
                         {
                                 return;
                         }
-                        // Every droppable item still in the bag, in this pass's wave order. Keep
-                        // making passes until nothing is left; only then go back to chopping.
-                        List<DropTarget> plan = buildDropPlan();
+                        List<HumanInput.DropTarget> plan = input.slotTargets(net.runelite.api.widgets.ComponentID.INVENTORY_CONTAINER,
+                                id -> !isKept(id));
                         if (plan.isEmpty())
                         {
                                 dropping = false;
@@ -1077,14 +636,14 @@ public class AutoWoodcutPlugin extends Plugin
                         }
                         else
                         {
+                                if (plan.size() > 1)
+                                {
+                                        input.waveOrder(plan);
+                                }
                                 stalledDropPasses = plan.size() >= lastDropCount && lastDropCount >= 0 ? stalledDropPasses + 1 : 0;
                                 lastDropCount = plan.size();
                                 boolean useShift = config.shiftDrop() && stalledDropPasses < 2;
-                                if (config.shiftDrop() && !useShift && config.logInput())
-                                {
-                                        Log.w(LOG_TAG, "shift-drop made no progress; using long-press drops (is 'Shift click to drop items' on?)");
-                                }
-                                boolean scheduled = useShift ? touch.shiftDrops(plan) : touch.drops(plan);
+                                boolean scheduled = useShift ? input.shiftDrops(plan) : input.drops(plan);
                                 waitTicks = scheduled ? random.nextInt(2) : 1;
                                 return;
                         }
@@ -1102,8 +661,7 @@ public class AutoWoodcutPlugin extends Plugin
                 }
 
                 // A tap was sent but chopping never started. A tap that left the player idle and
-                // not walking is noticed after two ticks and fixed at once; otherwise give it a
-                // few ticks (the walk to the tree) before trying again.
+                // not walking is noticed after two ticks and fixed at once.
                 if (pendingTree != null)
                 {
                         pendingTicks++;
@@ -1120,7 +678,7 @@ public class AutoWoodcutPlugin extends Plugin
                         pendingTicks = 0;
                 }
 
-                if (config.autoChop() && nextTree != null)
+                if (nextTree != null && !input.isBusy())
                 {
                         GameObject victim = nextTree;
                         if (victim != lastTree)
@@ -1128,13 +686,6 @@ public class AutoWoodcutPlugin extends Plugin
                                 lastTree = victim;
                                 pendingAttempts = 0;
                         }
-
-                        if (!objectVisibleForTap(victim))
-                        {
-                                maybeRescueCamera(victim);
-                                return;
-                        }
-
                         if (pendingAttempts >= MAX_TREE_ATTEMPTS)
                         {
                                 pendingAttempts = 0;
@@ -1143,26 +694,26 @@ public class AutoWoodcutPlugin extends Plugin
                                 waitTicks = 8 + random.nextInt(16);
                                 return;
                         }
-
-                        boolean quick = missNoticed || (pendingAttempts == 1 && persona != null
-                                && random.nextInt(100) < persona.doubleTapChance);
+                        String action = treeAction(victim);
+                        if (action == null)
+                        {
+                                return;
+                        }
+                        boolean quick = missNoticed || input.quickRetry(pendingAttempts);
                         missNoticed = false;
-
-                        if (touch.chop(victim, quick))
+                        boolean def = GameHelpers.objectDefaultAction(client, victim, action);
+                        if (input.interact(treeTarget(victim), action, def, quick, true))
                         {
                                 pendingTree = victim;
                                 choppingTree = victim;
                                 pendingTicks = 0;
                                 pendingAttempts++;
-                                waitTicks = reactionDelay();
+                                waitTicks = input.reactionDelay();
                         }
                 }
         }
 
-        /**
-         * Two ticks after a chop tap the player should be swinging the axe or walking to the
-         * tree. Standing still with no animation means the tap was lost.
-         */
+        /** Two ticks after a chop tap the player should be swinging or walking; idle means the tap was lost. */
         private boolean tapMissed(Player local)
         {
                 if (pendingTicks < 2 || local == null)
@@ -1174,932 +725,15 @@ public class AutoWoodcutPlugin extends Plugin
                         && local.getPoseAnimation() == local.getIdlePoseAnimation();
         }
 
-        // ---------------------------------------------------------------- reachability
-
-        private static String objectKey(TileObject obj)
-        {
-                WorldPoint wp = obj.getWorldLocation();
-                return obj.getId() + "@" + (wp == null ? "?" : wp.getX() + "," + wp.getY() + "," + wp.getPlane());
-        }
-
-        private boolean isMarkedUnreachable(TileObject obj)
-        {
-                Long until = unreachableUntil.get(objectKey(obj));
-                if (until == null)
-                {
-                        return false;
-                }
-                if (until > System.currentTimeMillis())
-                {
-                        return true;
-                }
-                unreachableUntil.remove(objectKey(obj));
-                return false;
-        }
-
-        private void markUnreachable(TileObject obj)
-        {
-                if (obj == null)
-                {
-                        return;
-                }
-                if (unreachableUntil.size() > 64)
-                {
-                        unreachableUntil.clear();
-                }
-                unreachableUntil.put(objectKey(obj), System.currentTimeMillis() + 120_000L);
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "unreachable, skipping for 2 minutes: " + objectKey(obj));
-                }
-        }
-
-        /**
-         * True when the player can walk up to this object right now (live collision, so
-         * closed doors and fences count) and the game has not just refused it.
-         */
-        private boolean canInteract(TileObject obj)
-        {
-                if (obj == null || isMarkedUnreachable(obj))
-                {
-                        return false;
-                }
-                LocalReach r = reach;
-                if (r == null)
-                {
-                        return true;
-                }
-                if (obj instanceof GameObject)
-                {
-                        GameObject g = (GameObject) obj;
-                        Point min = g.getSceneMinLocation();
-                        if (min == null)
-                        {
-                                return false;
-                        }
-                        return r.canInteract(min.getX(), min.getY(), g.sizeX(), g.sizeY());
-                }
-                LocalPoint lp = obj.getLocalLocation();
-                return lp != null && r.canInteract(lp.getSceneX(), lp.getSceneY(), 1, 1);
-        }
-
-        /** "I can't reach that!": blame whatever the last tap went to. */
-        private void onCantReach()
-        {
-                if (activeTransport != null)
-                {
-                        bannedTransports.add(activeTransport);
-                        activeTransport = null;
-                        transportObject = null;
-                        if (path != null || pathPending)
-                        {
-                                reroute();
-                        }
-                        return;
-                }
-                if (bankStep == BankStep.OPENING && bankObject != null)
-                {
-                        markUnreachable(bankObject);
-                        bankObject = null;
-                        bankStep = BankStep.TO_BANK;
-                        stepTicks = 0;
-                        return;
-                }
-                GameObject t = pendingTree != null ? pendingTree : lastTree;
-                if (t != null)
-                {
-                        markUnreachable(t);
-                        pendingTree = null;
-                        pendingTicks = 0;
-                        if (nextTree == t)
-                        {
-                                nextTree = null;
-                        }
-                }
-        }
-
-        // ---------------------------------------------------------------- walking
-
-        private static int cheb(WorldPoint a, int x, int y)
-        {
-                return Math.max(Math.abs(a.getX() - x), Math.abs(a.getY() - y));
-        }
-
-        /** Starts walking toward the nearest of {@code targets} (within {@code arrive} tiles). */
-        private void startWalk(List<WorldPoint> targets, int arrive, int maxCost)
-        {
-                walkTargets = new ArrayList<>(targets);
-                walkArrive = arrive;
-                walkMaxCost = maxCost;
-                recomputes = 0;
-                bannedTransports.clear();
-                walkPhase = random.nextDouble() * Math.PI * 2.0d;
-                requestPath();
-        }
-
-        private void stopWalk()
-        {
-                pathGeneration++;
-                path = null;
-                pathResult = null;
-                pathPending = false;
-                waitingForMap = false;
-                pathIndex = 0;
-                activeTransport = null;
-                transportObject = null;
-                walkGoal = null;
-                lastPos = null;
-                stillTicks = 0;
-        }
-
-        private void requestPath()
-        {
-                path = null;
-                pathResult = null;
-                pathIndex = 0;
-                activeTransport = null;
-                transportObject = null;
-                walkGoal = null;
-                lastPos = null;
-                stillTicks = 0;
-                Player local = client.getLocalPlayer();
-                if (local == null || walkTargets.isEmpty())
-                {
-                        pathPending = false;
-                        return;
-                }
-                final WorldCollision map = WorldCollision.get();
-                if (map == null)
-                {
-                        waitingForMap = true;
-                        pathPending = true;
-                        return;
-                }
-                waitingForMap = false;
-                long now = System.currentTimeMillis();
-                if (usableTransports == null || now - usableTransportsAt > 300_000L)
-                {
-                        usableTransports = Transport.usable(client);
-                        usableTransportsAt = now;
-                }
-                final List<Transport> ts = usableTransports;
-                final WorldPoint from = local.getWorldLocation();
-                final List<WorldPoint> targets = new ArrayList<>(walkTargets);
-                final int arrive = walkArrive;
-                final int max = walkMaxCost;
-                final Set<Transport> banned = new HashSet<>(bannedTransports);
-                final int gen = ++pathGeneration;
-                pathPending = true;
-                pathExecutor.execute(() ->
-                {
-                        PathFinder.Result r = null;
-                        try
-                        {
-                                r = PathFinder.find(map, ts, from, targets, arrive, max, banned);
-                        }
-                        catch (RuntimeException e)
-                        {
-                                Log.w(LOG_TAG, "path search failed", e);
-                        }
-                        if (gen != pathGeneration)
-                        {
-                                return;
-                        }
-                        pathResult = r;
-                        pathPending = false;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, r == null ? "no path found" : "path: " + r.steps.size() + " tiles, cost " + r.cost);
-                        }
-                });
-        }
-
-        private int reroute()
-        {
-                if (++recomputes > 5)
-                {
-                        return WALK_FAILED;
-                }
-                requestPath();
-                return WALK_BUSY;
-        }
-
-        /**
-         * One tick of following the path: minimap taps a varying distance ahead (the
-         * look-ahead rides a sine wave so the rhythm never settles), doors / stairs /
-         * ladders used with a real tap when they come up, re-planning when knocked off
-         * the path or stuck.
-         */
-        private int tickWalk(Player local)
-        {
-                if (waitingForMap)
-                {
-                        if (WorldCollision.get() == null)
-                        {
-                                return WALK_BUSY;
-                        }
-                        requestPath();
-                        return WALK_BUSY;
-                }
-                if (path == null)
-                {
-                        if (pathPending)
-                        {
-                                return WALK_BUSY;
-                        }
-                        PathFinder.Result r = pathResult;
-                        if (r == null)
-                        {
-                                return WALK_FAILED;
-                        }
-                        path = r.steps;
-                        pathIndex = 0;
-                        onPathFound(r);
-                }
-
-                WorldPoint here = local.getWorldLocation();
-                boolean moving = client.getLocalDestinationLocation() != null;
-
-                int best = -1;
-                int bestD = Integer.MAX_VALUE;
-                int from = Math.max(0, pathIndex - 3);
-                int to = Math.min(path.size() - 1, pathIndex + 40);
-                for (int i = from; i <= to; i++)
-                {
-                        PathFinder.Step st = path.get(i);
-                        if (st.z != here.getPlane())
-                        {
-                                continue;
-                        }
-                        int d = cheb(here, st.x, st.y);
-                        if (d < bestD || (d == bestD && i > best))
-                        {
-                                best = i;
-                                bestD = d;
-                        }
-                }
-                if (best < 0 || bestD > 3)
-                {
-                        if (activeTransport != null && transportTicks++ < 12)
-                        {
-                                return WALK_BUSY; // climbing / going through
-                        }
-                        if (activeTransport != null)
-                        {
-                                bannedTransports.add(activeTransport);
-                                activeTransport = null;
-                        }
-                        if (moving)
-                        {
-                                return WALK_BUSY;
-                        }
-                        return reroute();
-                }
-                pathIndex = best;
-                if (activeTransport != null && transportTicks++ > 2)
-                {
-                        activeTransport = null;
-                        transportObject = null;
-                }
-
-                PathFinder.Step last = path.get(path.size() - 1);
-                if (last.z == here.getPlane() && cheb(here, last.x, last.y) <= Math.max(1, walkArrive))
-                {
-                        return WALK_ARRIVED;
-                }
-
-                if (lastPos != null && lastPos.equals(here))
-                {
-                        stillTicks++;
-                }
-                else
-                {
-                        stillTicks = 0;
-                        lastPos = here;
-                }
-                if (stillTicks >= 8 && !moving)
-                {
-                        stillTicks = 0;
-                        return reroute();
-                }
-                if (touch.isBusy() || activeTransport != null)
-                {
-                        return WALK_BUSY;
-                }
-
-                // A door, staircase or ladder coming up?
-                int t = -1;
-                for (int i = pathIndex + 1; i < path.size() && i <= pathIndex + 14; i++)
-                {
-                        if (path.get(i).via != null)
-                        {
-                                t = i;
-                                break;
-                        }
-                }
-                int limit = path.size() - 1;
-                if (t >= 0)
-                {
-                        Transport tr = path.get(t).via;
-                        TileObject obj = findTransportObject(tr);
-                        if (obj != null)
-                        {
-                                limit = t - 1;
-                                if (t - pathIndex <= 6 || cheb(here, tr.originX, tr.originY) <= 5)
-                                {
-                                        if (!objectVisibleForTap(obj))
-                                        {
-                                                maybeRescueCamera(obj);
-                                                return WALK_BUSY;
-                                        }
-                                        transportObject = obj;
-                                        if (touch.interact(obj, tr.option, false, false))
-                                        {
-                                                activeTransport = tr;
-                                                transportTicks = 0;
-                                                walkGoal = null;
-                                                waitTicks = 1 + random.nextInt(2);
-                                                if (config.logInput())
-                                                {
-                                                        Log.i(LOG_TAG, "transport: " + tr);
-                                                }
-                                        }
-                                        return WALK_BUSY;
-                                }
-                        }
-                        else if (path.get(t).z != here.getPlane())
-                        {
-                                limit = t - 1;
-                                if (cheb(here, tr.originX, tr.originY) <= 2 && !moving)
-                                {
-                                        // Stairs / ladder not where the map says: plan around it.
-                                        bannedTransports.add(tr);
-                                        return reroute();
-                                }
-                        }
-                        // Same plane and no object found (door already open): walk straight through.
-                }
-
-                if (moving && walkGoal != null && cheb(here, walkGoal.getX(), walkGoal.getY()) > 2 + random.nextInt(3))
-                {
-                        return WALK_BUSY;
-                }
-                if (!moving && walkGoal != null && stillTicks < 2)
-                {
-                        return WALK_BUSY;
-                }
-
-                walkPhase += 0.7d + random.nextDouble() * 0.8d;
-                int look = 9 + (int) Math.round(3.5d * Math.sin(walkPhase)) + random.nextInt(3);
-                for (int j = Math.min(limit, pathIndex + look); j > pathIndex; j--)
-                {
-                        PathFinder.Step st = path.get(j);
-                        if (st.z != here.getPlane())
-                        {
-                                continue;
-                        }
-                        int[] pt = minimapPoint(st.x, st.y);
-                        if (pt == null)
-                        {
-                                continue;
-                        }
-                        if (touch.tap(pt, "walk"))
-                        {
-                                walkGoal = st.point();
-                                waitTicks = 1 + random.nextInt(2);
-                        }
-                        return WALK_BUSY;
-                }
-                return WALK_BUSY;
-        }
-
-        /** Minimap tap point for a world tile on the current plane, or null when off the minimap. */
-        private int[] minimapPoint(int worldX, int worldY)
-        {
-                WorldView wv = client.getTopLevelWorldView();
-                if (wv == null)
-                {
-                        return null;
-                }
-                LocalPoint lp = LocalPoint.fromWorld(wv, worldX, worldY);
-                if (lp == null)
-                {
-                        return null;
-                }
-                Point mm = Perspective.localToMinimap(client, lp);
-                if (mm == null)
-                {
-                        return null;
-                }
-                int[] s = toStretched(mm.getX(), mm.getY());
-                s[0] += signedJitter(2);
-                s[1] += signedJitter(2);
-                return s;
-        }
-
-        /** The door / staircase / ladder a transport uses, near its origin tile; null when not there. */
-        private TileObject findTransportObject(Transport tr)
-        {
-                WorldView wv = client.getTopLevelWorldView();
-                if (wv == null || wv.getPlane() != tr.originZ)
-                {
-                        return null;
-                }
-                LocalPoint lp = LocalPoint.fromWorld(wv, tr.originX, tr.originY);
-                if (lp == null)
-                {
-                        return null;
-                }
-                Scene scene = wv.getScene();
-                Tile[][][] tiles = scene == null ? null : scene.getTiles();
-                if (tiles == null || tr.originZ >= tiles.length)
-                {
-                        return null;
-                }
-                Tile[][] layer = tiles[tr.originZ];
-                TileObject byName = null;
-                int cx = lp.getSceneX();
-                int cy = lp.getSceneY();
-                for (int x = Math.max(0, cx - 2); x <= Math.min(layer.length - 1, cx + 2); x++)
-                {
-                        for (int y = Math.max(0, cy - 2); y <= Math.min(layer[x].length - 1, cy + 2); y++)
-                        {
-                                Tile tile = layer[x][y];
-                                if (tile == null)
-                                {
-                                        continue;
-                                }
-                                List<TileObject> objs = new ArrayList<>(6);
-                                GameObject[] gos = tile.getGameObjects();
-                                if (gos != null)
-                                {
-                                        for (GameObject g : gos)
-                                        {
-                                                if (g != null)
-                                                {
-                                                        objs.add(g);
-                                                }
-                                        }
-                                }
-                                if (tile.getWallObject() != null)
-                                {
-                                        objs.add(tile.getWallObject());
-                                }
-                                if (tile.getDecorativeObject() != null)
-                                {
-                                        objs.add(tile.getDecorativeObject());
-                                }
-                                if (tile.getGroundObject() != null)
-                                {
-                                        objs.add(tile.getGroundObject());
-                                }
-                                for (TileObject o : objs)
-                                {
-                                        ObjectComposition comp = composition(o.getId());
-                                        if (comp == null || !hasAction(comp, tr.option))
-                                        {
-                                                continue;
-                                        }
-                                        if (o.getId() == tr.objectId)
-                                        {
-                                                return o;
-                                        }
-                                        if (byName == null && tr.target.equalsIgnoreCase(Text.removeTags(String.valueOf(comp.getName()))))
-                                        {
-                                                byName = o;
-                                        }
-                                }
-                        }
-                }
-                return byName;
-        }
-
-        // ---------------------------------------------------------------- banking
-
-        private void startBanking(Player local)
-        {
-                WorldPoint here = local.getWorldLocation();
-                List<BankLocation> candidates = new ArrayList<>();
-                List<WorldPoint> points = new ArrayList<>();
-                for (BankLocation b : BankLocation.values())
-                {
-                        if (b.getNote() != null)
-                        {
-                                continue;
-                        }
-                        WorldPoint wp = b.getWorldPoint();
-                        if (cheb(here, wp.getX(), wp.getY()) > config.bankMaxDistance())
-                        {
-                                continue;
-                        }
-                        if (!b.isAccessible(client))
-                        {
-                                continue;
-                        }
-                        candidates.add(b);
-                        points.add(wp);
-                }
-                if (candidates.isEmpty())
-                {
-                        bankBlocked = true;
-                        notifier.notify(config.notifyFull(), "Inventory full — no usable bank within "
-                                + config.bankMaxDistance() + " tiles");
-                        return;
-                }
-                bankCandidates = candidates;
-                bank = null;
-                bankObject = null;
-                returnPoint = huntCenter != null ? huntCenter : here;
-                bankStep = BankStep.TO_BANK;
-                stepTicks = 0;
-                startWalk(points, 3, config.bankMaxDistance() * 2 + 60);
-                waitTicks = reactionDelay();
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "banking: " + candidates.size() + " candidate banks");
-                }
-        }
-
-        /** Path finder finished: remember which bank it chose. */
-        private void onPathFound(PathFinder.Result r)
-        {
-                if (bankStep == BankStep.TO_BANK && r.target >= 0 && r.target < bankCandidates.size())
-                {
-                        bank = bankCandidates.get(r.target);
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "walking to " + bank.getDisplayName() + " (" + r.steps.size() + " tiles)");
-                        }
-                }
-        }
-
-        private void endBanking()
-        {
-                bankStep = BankStep.NONE;
-                bank = null;
-                bankObject = null;
-                bankCandidates = Collections.emptyList();
-                stopWalk();
-        }
-
-        private void failBanking(String why)
-        {
-                notifier.notify(config.notifyFull(), why);
-                if (config.logInput())
-                {
-                        Log.w(LOG_TAG, "banking stopped: " + why);
-                }
-                endBanking();
-                bankBlocked = true;
-        }
-
-        private String bankName()
-        {
-                return bank == null ? "the bank" : bank.getDisplayName();
-        }
-
-        private void tickBanking(Player local)
-        {
-                stepTicks++;
-                WorldPoint here = local.getWorldLocation();
-                if (here == null)
-                {
-                        return;
-                }
-                boolean moving = client.getLocalDestinationLocation() != null;
-
-                switch (bankStep)
-                {
-                        case TO_BANK:
-                        {
-                                if (bankOpen())
-                                {
-                                        stopWalk();
-                                        bankStep = BankStep.DEPOSITING;
-                                        stepTicks = 0;
-                                        return;
-                                }
-                                if (touch.isBusy())
-                                {
-                                        return;
-                                }
-                                GameObject booth = findBankObject(local, 10);
-                                boolean nearEnd = path != null && path.size() - pathIndex <= 10;
-                                if (booth != null && (nearEnd || booth.getWorldLocation().distanceTo(here) <= 6))
-                                {
-                                        if (!objectVisibleForTap(booth))
-                                        {
-                                                maybeRescueCamera(booth);
-                                                return;
-                                        }
-                                        bankObject = booth;
-                                        if (touch.interact(booth, bankAction(booth), false, false))
-                                        {
-                                                bankStep = BankStep.OPENING;
-                                                stepTicks = 0;
-                                                waitTicks = 1;
-                                        }
-                                        return;
-                                }
-                                int w = tickWalk(local);
-                                if (w == WALK_FAILED)
-                                {
-                                        failBanking("No walkable route to a bank within " + config.bankMaxDistance() + " tiles");
-                                }
-                                else if (w == WALK_ARRIVED && booth == null && !moving)
-                                {
-                                        if (stepTicks > 400 || ++walkArrivedTicks > 12)
-                                        {
-                                                failBanking("No reachable bank booth or chest at " + bankName());
-                                        }
-                                }
-                                return;
-                        }
-                        case OPENING:
-                        {
-                                if (bankOpen())
-                                {
-                                        stopWalk();
-                                        bankStep = BankStep.DEPOSITING;
-                                        stepTicks = 0;
-                                        waitTicks = 1 + random.nextInt(2);
-                                        return;
-                                }
-                                if ((moving || touch.isBusy()) && stepTicks < 30)
-                                {
-                                        return;
-                                }
-                                if (stepTicks >= 4)
-                                {
-                                        bankStep = BankStep.TO_BANK;
-                                        stepTicks = 0;
-                                }
-                                return;
-                        }
-                        case DEPOSITING:
-                        {
-                                if (!bankOpen())
-                                {
-                                        bankStep = BankStep.TO_BANK;
-                                        stepTicks = 0;
-                                        return;
-                                }
-                                if (touch.isBusy())
-                                {
-                                        return;
-                                }
-                                if (!hasDepositables())
-                                {
-                                        bankStep = BankStep.RETURNING;
-                                        stepTicks = 0;
-                                        walkArrivedTicks = 0;
-                                        startWalk(Collections.singletonList(returnPoint), 2, config.bankMaxDistance() * 2 + 60);
-                                        waitTicks = 1 + random.nextInt(3);
-                                        return;
-                                }
-                                if (stepTicks > 40)
-                                {
-                                        failBanking("Could not deposit the inventory");
-                                        return;
-                                }
-                                if (!inventoryHasKept())
-                                {
-                                        int[] button = depositInventoryPoint();
-                                        if (button != null)
-                                        {
-                                                touch.tap(button, "Deposit inventory");
-                                                waitTicks = 2 + random.nextInt(2);
-                                                return;
-                                        }
-                                }
-                                int[] slot = bankInventoryDepositPoint();
-                                if (slot != null)
-                                {
-                                        touch.longPressPick(slot, "Deposit-All");
-                                        waitTicks = 1 + random.nextInt(2);
-                                }
-                                return;
-                        }
-                        case RETURNING:
-                        {
-                                if (returnPoint == null)
-                                {
-                                        endBanking();
-                                        return;
-                                }
-                                boolean inRange = returnPoint.getPlane() == here.getPlane()
-                                        && cheb(here, returnPoint.getX(), returnPoint.getY()) <= Math.max(2, config.huntRadius() / 2);
-                                if (inRange && !trees.isEmpty())
-                                {
-                                        endBanking();
-                                        nextTree = null;
-                                        waitTicks = reactionDelay();
-                                        return;
-                                }
-                                int w = tickWalk(local);
-                                if (w == WALK_ARRIVED)
-                                {
-                                        endBanking();
-                                        nextTree = null;
-                                        waitTicks = reactionDelay();
-                                }
-                                else if (w == WALK_FAILED)
-                                {
-                                        failBanking("No walkable route back to the trees");
-                                }
-                                return;
-                        }
-                        default:
-                }
-        }
-
-        private int walkArrivedTicks;
-
-        private boolean bankOpen()
-        {
-                Widget w = client.getWidget(ComponentID.BANK_CONTAINER);
-                return w != null && !w.isHidden();
-        }
-
-        /** Nearest reachable bank booth / chest within {@code radius} tiles of the player, or null. */
-        private GameObject findBankObject(Player local, int radius)
-        {
-                LocalPoint here = local.getLocalLocation();
-                WorldPoint me = local.getWorldLocation();
-                GameObject best = null;
-                int bestDist = Integer.MAX_VALUE;
-                for (GameObject obj : objectsAround(here, radius))
-                {
-                        if (bankAction(obj) == null || !canInteract(obj))
-                        {
-                                continue;
-                        }
-                        int d = obj.getWorldLocation().distanceTo(me);
-                        if (d < bestDist)
-                        {
-                                best = obj;
-                                bestDist = d;
-                        }
-                }
-                return best;
-        }
-
-        /** "Bank" for booths, "Use" for bank chests; null for anything that is not a bank. */
-        private String bankAction(GameObject obj)
-        {
-                ObjectComposition comp = composition(obj.getId());
-                if (comp == null)
-                {
-                        return null;
-                }
-                if (hasAction(comp, "Bank"))
-                {
-                        return "Bank";
-                }
-                String name = Text.removeTags(String.valueOf(comp.getName())).toLowerCase(Locale.ROOT);
-                if (name.contains("bank chest") && hasAction(comp, "Use"))
-                {
-                        return "Use";
-                }
-                return null;
-        }
-
-        private boolean hasDepositables()
-        {
-                ItemContainer inv = client.getItemContainer(InventoryID.INVENTORY);
-                if (inv == null)
-                {
-                        return false;
-                }
-                for (Item item : inv.getItems())
-                {
-                        if (item.getId() > 0 && item.getId() != EMPTY_ITEM_ID && !isKept(item.getId()))
-                        {
-                                return true;
-                        }
-                }
-                return false;
-        }
-
-        private boolean inventoryHasKept()
-        {
-                ItemContainer inv = client.getItemContainer(InventoryID.INVENTORY);
-                if (inv == null)
-                {
-                        return false;
-                }
-                for (Item item : inv.getItems())
-                {
-                        if (item.getId() > 0 && item.getId() != EMPTY_ITEM_ID && isKept(item.getId()))
-                        {
-                                return true;
-                        }
-                }
-                return false;
-        }
-
-        /** The "Deposit inventory" button, found by its action text; null when not found. */
-        private int[] depositInventoryPoint()
-        {
-                int[] ids = {ComponentID.BANK_DEPOSIT_INVENTORY, InterfaceID.Bankmain.DEPOSITINV, InterfaceID.Bankmain.DEPOSITWORN};
-                for (int id : ids)
-                {
-                        Widget w = client.getWidget(id);
-                        if (w == null || w.isHidden())
-                        {
-                                continue;
-                        }
-                        String[] actions = w.getActions();
-                        boolean match = false;
-                        if (actions != null)
-                        {
-                                for (String a : actions)
-                                {
-                                        if (a != null && Text.removeTags(a).toLowerCase(Locale.ROOT).contains("deposit inventory"))
-                                        {
-                                                match = true;
-                                                break;
-                                        }
-                                }
-                        }
-                        if (!match)
-                        {
-                                continue;
-                        }
-                        return widgetTapPoint(w);
-                }
-                return null;
-        }
-
-        /** A long-press point on the first non-kept item of the bank's inventory panel. */
-        private int[] bankInventoryDepositPoint()
-        {
-                Widget inv = client.getWidget(ComponentID.BANK_INVENTORY_ITEM_CONTAINER);
-                if (inv == null || inv.isHidden())
-                {
-                        return null;
-                }
-                Widget[] children = inv.getChildren();
-                if (children == null)
-                {
-                        return null;
-                }
-                List<Widget> candidates = new ArrayList<>();
-                for (Widget child : children)
-                {
-                        if (child == null || child.isHidden())
-                        {
-                                continue;
-                        }
-                        int id = child.getItemId();
-                        if (id <= 0 || id == EMPTY_ITEM_ID || isKept(id))
-                        {
-                                continue;
-                        }
-                        candidates.add(child);
-                }
-                if (candidates.isEmpty())
-                {
-                        return null;
-                }
-                // One of the first few depositable slots, not always the very first.
-                Widget pick = candidates.get(random.nextInt(Math.min(3, candidates.size())));
-                return widgetTapPoint(pick);
-        }
-
-        /** A fresh point in the middle 50% of a widget, in stretched canvas space. */
-        private int[] widgetTapPoint(Widget w)
-        {
-                Rectangle b = w.getBounds();
-                if (b == null || b.width <= 0 || b.height <= 0)
-                {
-                        return null;
-                }
-                int x = b.x + b.width / 2 + (int) Math.round((random.nextDouble() - 0.5d) * b.width * 0.5d);
-                int y = b.y + b.height / 2 + (int) Math.round((random.nextDouble() - 0.5d) * b.height * 0.5d);
-                int[] s = toStretched(x, y);
-                int cw = canvasWidth();
-                int ch = canvasHeight();
-                if (cw <= 0 || ch <= 0 || s[0] < 2 || s[1] < 2 || s[0] >= cw - 2 || s[1] >= ch - 2)
-                {
-                        return null;
-                }
-                return s;
-        }
-
         String getStatus()
         {
-                switch (bankStep)
+                if (bankSession != null && bankSession.isActive())
                 {
-                        case TO_BANK:
-                                return "To " + (bank == null ? "bank" : bank.getDisplayName());
-                        case OPENING:
-                                return "Opening bank";
-                        case DEPOSITING:
-                                return "Depositing";
-                        case RETURNING:
-                                return "Walking back";
-                        default:
+                        return bankSession.status();
+                }
+                if (returning)
+                {
+                        return "Walking back";
                 }
                 if (dropping)
                 {
@@ -2107,2387 +741,14 @@ public class AutoWoodcutPlugin extends Plugin
                 }
                 if (bankBlocked)
                 {
-                        return "No bank";
+                        return "Bank blocked";
                 }
                 return currentTree != null ? "Chopping" : "Idle";
         }
 
-        // ---------------------------------------------------------------- inventory
-
-        private boolean inventoryFull()
-        {
-                ItemContainer inv = client.getItemContainer(InventoryID.INVENTORY);
-                if (inv == null)
-                {
-                        return false;
-                }
-                Item[] items = inv.getItems();
-                if (items == null || items.length < 28)
-                {
-                        return false;
-                }
-                for (Item item : items)
-                {
-                        int id = item == null ? -1 : item.getId();
-                        if (id <= 0 || id == EMPTY_ITEM_ID)
-                        {
-                                return false;
-                        }
-                }
-                return true;
-        }
-
-        /** "used/total" for the overlay panel; "-" when the inventory is not loaded. */
         String getInventoryUsage()
         {
-                ItemContainer inv = client.getItemContainer(InventoryID.INVENTORY);
-                if (inv == null)
-                {
-                        return "-";
-                }
-                Item[] items = inv.getItems();
-                if (items == null || items.length == 0)
-                {
-                        return "-";
-                }
-                int used = 0;
-                for (Item item : items)
-                {
-                        int id = item == null ? -1 : item.getId();
-                        if (id > 0 && id != EMPTY_ITEM_ID)
-                        {
-                                used++;
-                        }
-                }
-                return used + "/" + items.length;
-        }
-
-        /**
-         * Builds the next batch of inventory drops: the droppable items in reading order
-         * (top-left to bottom-right, like a player emptying their bag), a few at a time.
-         * Empty when dropping is off or nothing is droppable.
-         */
-        private List<DropTarget> buildDropPlan()
-        {
-                Widget invWidget = client.getWidget(ComponentID.INVENTORY_CONTAINER);
-                if (invWidget == null)
-                {
-                        return Collections.emptyList();
-                }
-                Widget[] children = invWidget.getChildren();
-                if (children == null || children.length == 0)
-                {
-                        return Collections.emptyList();
-                }
-
-                int w = canvasWidth();
-                int h = canvasHeight();
-                if (w <= 0 || h <= 0)
-                {
-                        return Collections.emptyList();
-                }
-
-                List<DropTarget> plan = new ArrayList<>();
-                for (int slot = 0; slot < children.length; slot++)
-                {
-                        Widget child = children[slot];
-                        if (child == null)
-                        {
-                                continue;
-                        }
-                        int itemId = child.getItemId();
-                        if (itemId <= 0 || itemId == EMPTY_ITEM_ID)
-                        {
-                                continue;
-                        }
-                        if (isKept(itemId))
-                        {
-                                continue;
-                        }
-                        Point loc = child.getCanvasLocation();
-                        if (loc == null)
-                        {
-                                continue;
-                        }
-                        int cw = child.getWidth();
-                        int ch = child.getHeight();
-                        if (cw <= 0 || ch <= 0)
-                        {
-                                continue;
-                        }
-
-                        // A fresh spot inside the slot: hull-less cousin of the NPC placement, with
-                        // the same time-derived nudge so no two long-presses hit the same pixel.
-                        int realX = loc.getX() + cw / 2 + (int) Math.round((random.nextDouble() - 0.5d) * cw * 0.4d);
-                        int realY = loc.getY() + ch / 2 + (int) Math.round((random.nextDouble() - 0.5d) * ch * 0.4d);
-                        long t = System.nanoTime();
-                        realX += (int) ((t >>> 11) & 0x7L) - 3;
-                        realY += (int) ((t >>> 17) & 0x7L) - 3;
-
-                        int[] s = toStretched(realX, realY);
-                        if (s[0] < 6 || s[1] < 6 || s[0] >= w - 6 || s[1] >= h - 6)
-                        {
-                                continue;
-                        }
-                        // Note: no interface hit-test here — the inventory is exactly the interface
-                        // we are supposed to tap.
-                        plan.add(new DropTarget(s[0], s[1], itemName(itemId), slot));
-                }
-
-                if (plan.size() > 1)
-                {
-                        waveOrder(plan);
-                }
-                return plan;
-        }
-
-        private static final int INV_COLUMNS = 4;
-
-
-        /**
-         * Orders a drop pass along a sine wave laid over the 4x7 inventory grid. Each pass
-         * rolls a fresh wave: k in 1..8 sets how many half-oscillations fit across the
-         * sweep, plus a random amplitude, phase, sweep axis and sweep direction. Slots are
-         * sorted by (sweep position + amplitude * sin(k * pi * cross position + phase)),
-         * so the finger snakes through the bag in a smooth, repeatable-looking curve whose
-         * shape never repeats from one pass to the next. Each target also gets its wave
-         * value stored so the tap rhythm can ride the same curve.
-         */
-        private void waveOrder(List<DropTarget> plan)
-        {
-                final int k = 1 + random.nextInt(8);
-                final double amp = 0.35d + random.nextDouble() * (0.6d + k * 0.18d);
-                final double phase = random.nextDouble() * Math.PI * 2d;
-                final boolean byColumns = random.nextBoolean();
-                final boolean reverse = random.nextInt(4) == 0;
-                final double rows = 7d;
-                final double cols = INV_COLUMNS;
-
-                for (DropTarget t : plan)
-                {
-                        int row = t.slot / INV_COLUMNS;
-                        int col = t.slot % INV_COLUMNS;
-                        double sweep = byColumns ? col : row;
-                        double cross = byColumns ? row / (rows - 1d) : col / (cols - 1d);
-                        double wave = Math.sin(k * Math.PI * cross + phase);
-                        t.wave = wave;
-                        t.key = (reverse ? -sweep : sweep) + amp * wave + cross * 0.001d;
-                }
-                plan.sort((a, b) -> Double.compare(a.key, b.key));
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, String.format(Locale.ROOT, "drop wave: k=%d amp=%.2f phase=%.2f %s%s",
-                                k, amp, phase, byColumns ? "columns" : "rows", reverse ? " reversed" : ""));
-                }
-        }
-
-        private String itemName(int id)
-        {
-                return Text.removeTags(String.valueOf(itemManager.getItemComposition(id).getName()));
-        }
-
-        // ---------------------------------------------------------------- screen geometry
-
-        /** Real→stretched canvas scale factors {x, y} (1,1 when stretching is off). */
-        private double[] stretchFactors()
-        {
-                if (!client.isStretchedEnabled())
-                {
-                        return new double[]{1.0d, 1.0d};
-                }
-                java.awt.Dimension real = client.getRealDimensions();
-                java.awt.Dimension stretched = client.getStretchedDimensions();
-                if (real == null || stretched == null || real.width <= 0 || real.height <= 0)
-                {
-                        return new double[]{1.0d, 1.0d};
-                }
-                return new double[]{stretched.width / (double) real.width, stretched.height / (double) real.height};
-        }
-
-        /** Converts a real-space canvas point into stretched (dispatch) space. */
-        private int[] toStretched(int realX, int realY)
-        {
-                double[] f = stretchFactors();
-                return new int[]{
-                        (int) Math.round(realX * f[0]),
-                        (int) Math.round(realY * f[1])
-                };
-        }
-
-        private int canvasWidth()
-        {
-                Canvas canvas = Canvas.latest();
-                return canvas == null ? 0 : canvas.getWidth();
-        }
-
-        private int canvasHeight()
-        {
-                Canvas canvas = Canvas.latest();
-                return canvas == null ? 0 : canvas.getHeight();
-        }
-
-        /**
-         * Picks a fresh spot on the object's clickbox (convex hull), converts it into stretched
-         * canvas space, and nudges it with a time-derived wobble so the same pixel is never
-         * tapped twice in a row. Null when the spot is not tappable (off screen, behind a
-         * relocated interface, or outside the canvas).
-         */
-        private int[] objectTapPoint(TileObject npc, Placement placement)
-        {
-                int[] real = hullPoint(npc, placement);
-                if (real == null)
-                {
-                        // No hull (unusual view angle): aim at the projected body centre instead.
-                        LocalPoint lp = npc.getLocalLocation();
-                        if (lp == null)
-                        {
-                                return null;
-                        }
-                        WorldView wv = client.getTopLevelWorldView();
-                        int plane = wv == null ? 0 : wv.getPlane();
-                        int height = 90;
-                        Point c = Perspective.localToCanvas(client, lp, plane, height);
-                        if (c == null)
-                        {
-                                return null;
-                        }
-                        real = new int[]{c.getX(), c.getY()};
-                }
-
-                int[] s = toStretched(real[0], real[1]);
-
-                // Time-derived nudge: two taps a frame apart can never land on the same pixel.
-                long t = System.nanoTime();
-                s[0] += (int) ((t >>> 11) & 0x7L) - 3;
-                s[1] += (int) ((t >>> 17) & 0x7L) - 3;
-
-                int w = canvasWidth();
-                int h = canvasHeight();
-                if (w <= 0 || h <= 0 || s[0] < 6 || s[1] < 6 || s[0] >= w - 6 || s[1] >= h - 6)
-                {
-                        return null;
-                }
-                if (MobileHitTest.isInterfaceAt(s[0], s[1]))
-                {
-                        // Behind a relocated mobile interface panel; a real player would not tap here.
-                        return null;
-                }
-                return s;
-        }
-
-        /** Random point inside the object's hull in real canvas space, per the placement strategy. */
-        private int[] hullPoint(TileObject npc, Placement placement)
-        {
-                Shape hull = hullOf(npc);
-                if (hull == null)
-                {
-                        return null;
-                }
-                Rectangle b = hull.getBounds();
-                if (b.width < 3 || b.height < 3)
-                {
-                        return null;
-                }
-                int cx = b.x + b.width / 2;
-                int cy = b.y + b.height / 2;
-
-                switch (placement)
-                {
-                        case GAUSSIAN_CENTER:
-                        {
-                                int x = cx + (int) Math.round(random.nextGaussian() * b.width * 0.16d);
-                                int y = cy + (int) Math.round(random.nextGaussian() * b.height * 0.16d);
-                                return clampToRect(x, y, b);
-                        }
-                        case UNIFORM_HULL:
-                        {
-                                // Mix a little of the current time into the first candidate angle,
-                                // then fall back to plain rejection sampling inside the hull.
-                                long t = System.nanoTime();
-                                double ang = ((t >>> 9) % 360L) * Math.PI / 180.0d;
-                                double rad = 0.3d + random.nextDouble() * 0.65d;
-                                int x = (int) Math.round(cx + Math.cos(ang) * rad * b.width / 2.0d);
-                                int y = (int) Math.round(cy + Math.sin(ang) * rad * b.height / 2.0d);
-                                if (hull.contains(x, y))
-                                {
-                                        return new int[]{x, y};
-                                }
-                                for (int i = 0; i < 12; i++)
-                                {
-                                        x = b.x + random.nextInt(b.width);
-                                        y = b.y + random.nextInt(b.height);
-                                        if (hull.contains(x, y))
-                                        {
-                                                return new int[]{x, y};
-                                        }
-                                }
-                                return new int[]{cx, cy};
-                        }
-                        case LOWER_BIAS:
-                        {
-                                int x = cx + (int) Math.round(random.nextGaussian() * b.width * 0.18d);
-                                int y = (int) Math.round(cy + b.height * 0.15d + random.nextGaussian() * b.height * 0.12d);
-                                return clampToRect(x, y, b);
-                        }
-                        case TIGHT_BOX:
-                        default:
-                        {
-                                int x0 = b.x + (int) (b.width * 0.2d);
-                                int x1 = b.x + (int) (b.width * 0.8d);
-                                int y0 = b.y + (int) (b.height * 0.2d);
-                                int y1 = b.y + (int) (b.height * 0.8d);
-                                for (int i = 0; i < 8; i++)
-                                {
-                                        int x = x0 + random.nextInt(Math.max(1, x1 - x0));
-                                        int y = y0 + random.nextInt(Math.max(1, y1 - y0));
-                                        if (hull.contains(x, y))
-                                        {
-                                                return new int[]{x, y};
-                                        }
-                                }
-                                return new int[]{cx, cy};
-                        }
-                }
-        }
-
-        private static int[] clampToRect(int x, int y, Rectangle b)
-        {
-                return new int[]{
-                        Math.max(b.x, Math.min(b.x + b.width - 1, x)),
-                        Math.max(b.y, Math.min(b.y + b.height - 1, y))
-                };
-        }
-
-        /** True when the object's clickbox is at least partly on the canvas. */
-        private boolean objectVisibleForTap(TileObject npc)
-        {
-                Shape hull = hullOf(npc);
-                if (hull == null)
-                {
-                        return false;
-                }
-                Rectangle b = hull.getBounds();
-                int[] p1 = toStretched(b.x, b.y);
-                int[] p2 = toStretched(b.x + b.width, b.y + b.height);
-                int w = canvasWidth();
-                int h = canvasHeight();
-                return w > 0 && h > 0 && p2[0] >= 0 && p1[0] <= w && p2[1] >= 0 && p1[1] <= h;
-        }
-
-        /**
-         * A water point just outside the object's clickbox, for the occasional misclick:
-         * a tile within 1-2 of the spot's tile that is on screen, not on an interface, and
-         * does not overlap the hull itself.
-         */
-        private int[] groundMisclickPoint(TileObject npc)
-        {
-                WorldPoint at = npc.getWorldLocation();
-                WorldView wv = client.getTopLevelWorldView();
-                if (at == null || wv == null)
-                {
-                        return null;
-                }
-
-                Shape hull = hullOf(npc);
-                Rectangle hullReal = hull == null ? null : hull.getBounds();
-                int[] hullCentre = null;
-                int hx0 = Integer.MIN_VALUE, hy0 = Integer.MIN_VALUE, hx1 = Integer.MIN_VALUE, hy1 = Integer.MIN_VALUE;
-                if (hullReal != null && hullReal.width > 0)
-                {
-                        int[] c = toStretched(hullReal.x + hullReal.width / 2, hullReal.y + hullReal.height / 2);
-                        int[] p0 = toStretched(hullReal.x, hullReal.y);
-                        int[] p1 = toStretched(hullReal.x + hullReal.width, hullReal.y + hullReal.height);
-                        hullCentre = c;
-                        hx0 = p0[0] - 4;
-                        hy0 = p0[1] - 4;
-                        hx1 = p1[0] + 4;
-                        hy1 = p1[1] + 4;
-                }
-                if (hullCentre == null)
-                {
-                        LocalPoint lp = npc.getLocalLocation();
-                        if (lp != null)
-                        {
-                                Point c = Perspective.localToCanvas(client, lp, at.getPlane());
-                                if (c != null)
-                                {
-                                        hullCentre = toStretched(c.getX(), c.getY());
-                                }
-                        }
-                }
-
-                int w = canvasWidth();
-                int h = canvasHeight();
-                if (hullCentre == null || w <= 0 || h <= 0)
-                {
-                        return null;
-                }
-
-                int[] best = null;
-                int bestDist = Integer.MAX_VALUE;
-                for (int attempt = 0; attempt < 6; attempt++)
-                {
-                        int ox = random.nextInt(5) - 2;
-                        int oy = random.nextInt(5) - 2;
-                        if (ox == 0 && oy == 0)
-                        {
-                                ox = random.nextBoolean() ? 1 : -1;
-                        }
-                        LocalPoint lp = LocalPoint.fromWorld(wv, at.getX() + ox, at.getY() + oy);
-                        if (lp == null)
-                        {
-                                continue;
-                        }
-                        Point c = Perspective.localToCanvas(client, lp, at.getPlane());
-                        if (c == null)
-                        {
-                                continue;
-                        }
-                        int[] s = toStretched(c.getX(), c.getY());
-                        s[0] += signedJitter(10);
-                        s[1] += signedJitter(10);
-                        if (s[0] < 8 || s[1] < 8 || s[0] >= w - 8 || s[1] >= h - 8)
-                        {
-                                continue;
-                        }
-                        if (MobileHitTest.isInterfaceAt(s[0], s[1]))
-                        {
-                                continue;
-                        }
-                        if (s[0] >= hx0 && s[0] <= hx1 && s[1] >= hy0 && s[1] <= hy1)
-                        {
-                                continue; // still on the spot itself
-                        }
-                        int d = Math.abs(s[0] - hullCentre[0]) + Math.abs(s[1] - hullCentre[1]);
-                        if (d < bestDist)
-                        {
-                                bestDist = d;
-                                best = s;
-                        }
-                }
-                return best;
-        }
-
-        /**
-         * A dismiss point for the currently open context menu, in stretched canvas space,
-         * or null when no menu is open / no safe point exists. Client thread only.
-         */
-        private int[] currentMenuDismissPoint()
-        {
-                if (!client.isMenuOpen())
-                {
-                        return null;
-                }
-                double[] f = stretchFactors();
-                return playerDismissPoint(
-                        (int) Math.round(client.getMenuX() * f[0]),
-                        (int) Math.round(client.getMenuY() * f[1]),
-                        (int) Math.round(client.getMenuWidth() * f[0]),
-                        (int) Math.round(client.getMenuHeight() * f[1]));
-        }
-
-        /** A harmless tap point: the player's own tile, pushed out of the given menu rect. */
-        private int[] playerDismissPoint(int menuX, int menuY, int menuW, int menuH)
-        {
-                Player local = client.getLocalPlayer();
-                WorldView wv = client.getTopLevelWorldView();
-                if (local == null || local.getLocalLocation() == null || wv == null)
-                {
-                        return null;
-                }
-                Point c = Perspective.localToCanvas(client, local.getLocalLocation(), wv.getPlane());
-                if (c == null)
-                {
-                        return null;
-                }
-                int[] s = toStretched(c.getX(), c.getY());
-                int w = canvasWidth();
-                int h = canvasHeight();
-                if (w <= 0 || h <= 0)
-                {
-                        return null;
-                }
-
-                if (menuW > 0 && menuH > 0
-                        && s[0] >= menuX && s[0] <= menuX + menuW && s[1] >= menuY && s[1] <= menuY + menuH)
-                {
-                        s[1] = menuY + menuH + 30;
-                        if (s[1] >= h - 8)
-                        {
-                                s[1] = Math.max(8, menuY - 30);
-                        }
-                }
-                s[0] = Math.max(8, Math.min(w - 9, s[0]));
-                s[1] = Math.max(8, Math.min(h - 9, s[1]));
-
-                if (menuW > 0 && menuH > 0
-                        && s[0] >= menuX && s[0] <= menuX + menuW && s[1] >= menuY && s[1] <= menuY + menuH)
-                {
-                        return null; // could not get clear of the menu
-                }
-                if (MobileHitTest.isInterfaceAt(s[0], s[1]))
-                {
-                        return null;
-                }
-                return s;
-        }
-
-
-        // ---------------------------------------------------------------- touch engine
-
-        /** One inventory slot to drop: a long-press point in stretched canvas space. */
-        private static final class DropTarget
-        {
-                final int x;
-                final int y;
-                final String label;
-                final int slot;
-                /** Wave value (-1..1) at this slot for the current pass; drives the tap rhythm. */
-                double wave;
-                double key;
-
-                DropTarget(int x, int y, String label, int slot)
-                {
-                        this.x = x;
-                        this.y = y;
-                        this.label = label;
-                        this.slot = slot;
-                }
-        }
-
-        /**
-         * Schedules and replays gesture "scripts". A script is a sequence of sleeps and
-         * AWT-event emissions run on a single dedicated timeline thread, so gestures never
-         * interleave; each emission is posted to the Android main thread, exactly where the
-         * Compose touch driver dispatches from.
-         *
-         * <p>The event shapes replayed here are byte-for-byte what the real driver produces:
-         * a tap is two parking {@code MOUSE_MOVED}s at finger-down, then a
-         * MOVED/PRESSED/RELEASED/CLICKED burst at finger-up, all at the down position; a
-         * long-press menu selection is a BUTTON3 burst at the driver's long-press timeout,
-         * a trail of {@code MOUSE_MOVED}s tracking the finger to the menu row, and a BUTTON1
-         * burst on the row.</p>
-         */
-        private final class TouchEngine
-        {
-                private ScheduledExecutorService timeline;
-                private Handler main;
-                private volatile boolean running;
-                /** Bumped to cancel in-flight scripts (and their queued main-thread posts). */
-                private volatile int generation;
-                /** True while a fishing/drop gesture is in flight (hover drifts do not count). */
-                private volatile boolean busy;
-                private volatile boolean hovering;
-                /** Last dispatched point, canvas (stretched) space. Engine thread only. */
-                private int lastX = -1;
-                private int lastY = -1;
-
-                void start()
-                {
-                        if (running)
-                        {
-                                return;
-                        }
-                        timeline = Executors.newSingleThreadScheduledExecutor(r ->
-                        {
-                                Thread t = new Thread(r, "AutoWoodcut-Touch");
-                                t.setDaemon(true);
-                                return t;
-                        });
-                        main = new Handler(Looper.getMainLooper());
-                        running = true;
-                        generation = 0;
-                        busy = false;
-                        hovering = false;
-                        lastX = -1;
-                        lastY = -1;
-                }
-
-                void stop()
-                {
-                        running = false;
-                        generation++;
-                        ScheduledExecutorService ex = timeline;
-                        timeline = null;
-                        if (ex != null)
-                        {
-                                ex.shutdownNow();
-                        }
-                        Handler h = main;
-                        main = null;
-                        if (h != null)
-                        {
-                                h.removeCallbacksAndMessages(null);
-                        }
-                        busy = false;
-                        hovering = false;
-                }
-
-                boolean isBusy()
-                {
-                        return busy;
-                }
-
-                /** Drops every in-flight gesture and any events still queued on the main thread. */
-                void cancelAll()
-                {
-                        generation++;
-                }
-
-                private boolean aborted(int gen)
-                {
-                        return !running || gen != generation;
-                }
-
-                /** @return false when interrupted (treat as cancel) */
-                private boolean sleep(int ms)
-                {
-                        try
-                        {
-                                Thread.sleep(Math.max(1, ms));
-                                return true;
-                        }
-                        catch (InterruptedException e)
-                        {
-                                Thread.currentThread().interrupt();
-                                return false;
-                        }
-                }
-
-                // ---- entry points (called on the client thread) ----
-
-                /** Starts chopping a tree with a simulated finger (tap, or long-press + menu). */
-                boolean chop(GameObject tree, boolean quickRetry)
-                {
-                        String wanted = treeAction(tree);
-                        return wanted != null && interact(tree, wanted, quickRetry, true);
-                }
-
-                /**
-                 * Performs {@code wanted} on an object with a simulated finger. Chooses between
-                 * a plain tap (when the action is the left-click default and the style is not in
-                 * a menu mood) and a long-press + menu selection.
-                 *
-                 * @param allowMisclick whether this tap may slip onto the ground first
-                 * @return true when a gesture was scheduled
-                 */
-                boolean interact(TileObject target, String wanted, boolean quickRetry, boolean allowMisclick)
-                {
-                        if (!running || busy || persona == null || wanted == null)
-                        {
-                                return false;
-                        }
-                        if (client.getGameState() != GameState.LOGGED_IN)
-                        {
-                                return false;
-                        }
-
-                        Persona p = persona;
-                        boolean menuForced = !actionIsDefaultAction(target, wanted);
-                        boolean useMenu = menuForced || random.nextInt(100) < p.menuChance;
-                        Placement placement = useMenu ? Placement.TIGHT_BOX : p.placement;
-
-                        int[] pt = objectTapPoint(target, placement);
-                        if (pt == null)
-                        {
-                                return false;
-                        }
-                        int[] ground = useMenu || !allowMisclick ? null : groundMisclickPoint(target);
-
-                        int[] dismiss = currentMenuDismissPoint();
-                        if (client.isMenuOpen() && dismiss == null)
-                        {
-                                return false;
-                        }
-
-                        int pad = quickRetry
-                                ? 120 + random.nextInt(260)
-                                : personaPad(p);
-                        if (System.currentTimeMillis() - personaChangedAt < 5000L)
-                        {
-                                pad += 350 + random.nextInt(850);
-                        }
-
-                        final int gen = ++generation;
-                        final TileObject victim = target;
-                        final Persona style = p;
-                        final boolean menu = useMenu;
-                        final String action = wanted;
-                        final int[] point = pt;
-                        final int[] groundPoint = ground;
-                        final int[] dismissPoint = dismiss;
-                        final int padMs = pad;
-
-                        busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, (menu ? "menu-walk" : "tap") + " '" + action + "' at " + pt[0] + "," + pt[1]
-                                        + " pad=" + padMs + "ms" + (ground != null ? " misclick-armed" : ""));
-                        }
-                        try
-                        {
-                                timeline.execute(() -> runInteract(gen, victim, style, menu, action, point, groundPoint, dismissPoint, padMs));
-                        }
-                        catch (RuntimeException rejected)
-                        {
-                                busy = false;
-                                return false;
-                        }
-                        return true;
-                }
-
-                /** A plain tap on a fixed canvas point (minimap, bank button). */
-                boolean tap(int[] pt, String label)
-                {
-                        if (!running || busy || persona == null || pt == null)
-                        {
-                                return false;
-                        }
-                        int[] dismiss = currentMenuDismissPoint();
-                        if (client.isMenuOpen() && dismiss == null)
-                        {
-                                return false;
-                        }
-                        final int gen = ++generation;
-                        final Persona style = persona;
-                        final int[] point = pt;
-                        final int[] dismissPoint = dismiss;
-                        final int padMs = Math.max(30, personaPad(style) / 2);
-                        busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "tap '" + label + "' at " + pt[0] + "," + pt[1]);
-                        }
-                        try
-                        {
-                                timeline.execute(() -> runTap(gen, style, point, dismissPoint, padMs));
-                        }
-                        catch (RuntimeException rejected)
-                        {
-                                busy = false;
-                                return false;
-                        }
-                        return true;
-                }
-
-                /** Long-press a fixed canvas point and pick {@code option} from the menu. */
-                boolean longPressPick(int[] pt, String option)
-                {
-                        if (!running || busy || persona == null || pt == null)
-                        {
-                                return false;
-                        }
-                        int[] dismiss = currentMenuDismissPoint();
-                        if (client.isMenuOpen() && dismiss == null)
-                        {
-                                return false;
-                        }
-                        final int gen = ++generation;
-                        final Persona style = persona;
-                        final int[] point = pt;
-                        final int[] dismissPoint = dismiss;
-                        final int padMs = Math.max(40, personaPad(style) / 2);
-                        busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "long-press '" + option + "' at " + pt[0] + "," + pt[1]);
-                        }
-                        try
-                        {
-                                timeline.execute(() ->
-                                {
-                                        try
-                                        {
-                                                if (dismissPoint != null && !dismissMenu(gen, dismissPoint))
-                                                {
-                                                        return;
-                                                }
-                                                if (!sleep(padMs) || aborted(gen))
-                                                {
-                                                        return;
-                                                }
-                                                if (random.nextInt(100) < style.approachChance && lastX >= 0)
-                                                {
-                                                        approachTrail(gen, point[0], point[1]);
-                                                        if (aborted(gen))
-                                                        {
-                                                                return;
-                                                        }
-                                                }
-                                                menuWalk(gen, point, style, option, null);
-                                        }
-                                        finally
-                                        {
-                                                busy = false;
-                                        }
-                                });
-                        }
-                        catch (RuntimeException rejected)
-                        {
-                                busy = false;
-                                return false;
-                        }
-                        return true;
-                }
-
-
-                /**
-                 * Drops a batch of inventory items with the simulated finger: one long-press +
-                 * "Drop" menu walk per item, spaced like a player emptying their bag.
-                 *
-                 * @return true when a gesture was scheduled
-                 */
-                boolean drops(List<DropTarget> targets)
-                {
-                        if (!running || busy || persona == null || targets == null || targets.isEmpty())
-                        {
-                                return false;
-                        }
-                        if (client.getGameState() != GameState.LOGGED_IN)
-                        {
-                                return false;
-                        }
-                        Persona p = persona;
-                        int[] dismiss = currentMenuDismissPoint();
-                        if (client.isMenuOpen() && dismiss == null)
-                        {
-                                return false;
-                        }
-
-                        final int gen = ++generation;
-                        final Persona style = p;
-                        final List<DropTarget> batch = new ArrayList<>(targets);
-                        final int[] dismissPoint = dismiss;
-                        final int padMs = personaPad(p);
-
-                        busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "drop gesture: " + batch.size() + " items pad=" + padMs + "ms");
-                        }
-                        try
-                        {
-                                timeline.execute(() -> runDrops(gen, style, batch, dismissPoint, padMs));
-                        }
-                        catch (RuntimeException rejected)
-                        {
-                                busy = false;
-                                return false;
-                        }
-                        return true;
-                }
-
-                /**
-                 * Shift-drops a whole pass of inventory items: hold shift, then quick single
-                 * taps on each slot in the pass's wave order, then let go of shift. Needs the
-                 * in-game "Shift click to drop items" setting.
-                 *
-                 * @return true when a gesture was scheduled
-                 */
-                boolean shiftDrops(List<DropTarget> targets)
-                {
-                        if (!running || busy || persona == null || targets == null || targets.isEmpty())
-                        {
-                                return false;
-                        }
-                        if (client.getGameState() != GameState.LOGGED_IN)
-                        {
-                                return false;
-                        }
-                        int[] dismiss = currentMenuDismissPoint();
-                        if (client.isMenuOpen() && dismiss == null)
-                        {
-                                return false;
-                        }
-
-                        final int gen = ++generation;
-                        final Persona style = persona;
-                        final List<DropTarget> batch = new ArrayList<>(targets);
-                        final int[] dismissPoint = dismiss;
-
-                        busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "shift-drop pass: " + batch.size() + " items");
-                        }
-                        try
-                        {
-                                timeline.execute(() -> runShiftDrops(gen, style, batch, dismissPoint));
-                        }
-                        catch (RuntimeException rejected)
-                        {
-                                busy = false;
-                                return false;
-                        }
-                        return true;
-                }
-
-                /**
-                 * Idle finger drift while waiting on a catch: pure hover moves, no clicks.
-                 * The cursor traces Lissajous figures — a cosine oscillator on x and a sine
-                 * oscillator on y, with random amplitudes, random phases and a frequency
-                 * ratio drawn from near-simple fractions (1:1, 1:2, 2:3, …) plus a small
-                 * detune. The detune stops the figure from ever closing on itself, so the
-                 * wander looks smooth and curving yet never repeats: two trigonometric
-                 * oscillators and a handful of random numbers make every drift unique.
-                 */
-                void hoverDrift()
-                {
-                        if (!running || busy || hovering || lastX < 0 || client.isMenuOpen())
-                        {
-                                return;
-                        }
-                        final int gen = generation;
-                        hovering = true;
-                        try
-                        {
-                                timeline.execute(() ->
-                                {
-                                        try
-                                        {
-                                                int cx = lastX;
-                                                int cy = lastY;
-                                                int w = canvasWidth();
-                                                int h = canvasHeight();
-                                                if (w <= 0 || h <= 0)
-                                                {
-                                                        return;
-                                                }
-
-                                                // Random harmonics for this drift.
-                                                int[] ratios = {1, 2, 3};
-                                                double base = ratios[random.nextInt(ratios.length)];
-                                                double detune = 0.05d + random.nextDouble() * 0.14d;
-                                                double fy = base + (random.nextBoolean() ? detune : -detune);
-
-                                                double ax = 16.0d + random.nextDouble() * 46.0d;
-                                                double ay = 12.0d + random.nextDouble() * 38.0d;
-                                                double phx = random.nextDouble() * 2.0d * Math.PI;
-                                                double phy = random.nextDouble() * 2.0d * Math.PI;
-
-                                                double periodMs = 900.0d + random.nextDouble() * 1700.0d;
-                                                double omega = 2.0d * Math.PI / periodMs;
-                                                long duration = 1200L + random.nextInt(2600);
-                                                long t0 = System.currentTimeMillis();
-
-                                                while (System.currentTimeMillis() - t0 < duration && !aborted(gen))
-                                                {
-                                                        if (!sleep(40 + random.nextInt(50)))
-                                                        {
-                                                                return;
-                                                        }
-                                                        double t = System.currentTimeMillis() - t0;
-                                                        double x = cx + ax * Math.cos(omega * t + phx);
-                                                        double y = cy + ay * Math.sin(fy * omega * t + phy);
-                                                        int ix = Math.max(4, Math.min(w - 5, (int) Math.round(x)));
-                                                        int iy = Math.max(4, Math.min(h - 5, (int) Math.round(y)));
-                                                        if (!MobileHitTest.isInterfaceAt(ix, iy))
-                                                        {
-                                                                emitMove(gen, ix, iy);
-                                                        }
-                                                }
-                                        }
-                                        finally
-                                        {
-                                                hovering = false;
-                                        }
-                                });
-                        }
-                        catch (RuntimeException ignored)
-                        {
-                                hovering = false;
-                        }
-                }
-
-                // ---- gesture scripts (timeline thread) ----
-
-                private void runInteract(int gen, TileObject victim, Persona p, boolean menu, String wanted, int[] pt, int[] ground, int[] dismiss, int pad)
-                {
-                        try
-                        {
-                                if (aborted(gen))
-                                {
-                                        return;
-                                }
-                                if (dismiss != null && !dismissMenu(gen, dismiss))
-                                {
-                                        return;
-                                }
-                                if (aborted(gen))
-                                {
-                                        return;
-                                }
-                                if (!sleep(Math.max(20, pad)))
-                                {
-                                        return;
-                                }
-
-                                // Re-read the hull right before committing so the tap lands where
-                                // the spot actually is now, not where it was at decision time.
-                                Placement placement = menu ? Placement.TIGHT_BOX : p.placement;
-                                int[] fresh = refreshPoint(gen, victim, placement, pt);
-                                if (fresh == null || aborted(gen))
-                                {
-                                        return;
-                                }
-                                int[] target = fresh;
-
-                                boolean misclick = !menu && ground != null
-                                        && random.nextInt(100) < effectiveMisclickChance(p);
-                                int[] fingerDown = misclick ? ground : target;
-
-                                if (!misclick && random.nextInt(100) < p.approachChance && lastX >= 0)
-                                {
-                                        approachTrail(gen, fingerDown[0], fingerDown[1]);
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                }
-
-                                if (menu)
-                                {
-                                        menuWalk(gen, fingerDown, p, wanted, victim);
-                                        return;
-                                }
-
-                                // Finger down: two parking moves, a few ms apart.
-                                emitMove(gen, fingerDown[0], fingerDown[1]);
-                                if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                                {
-                                        return;
-                                }
-                                emitMove(gen, fingerDown[0], fingerDown[1]);
-
-                                if (!misclick)
-                                {
-                                        // Look before tapping: make sure a tap here really does the
-                                        // wanted action on this target, re-aiming if it would not.
-                                        int[] aimed = aimUntilHover(gen, victim, wanted, fingerDown);
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        if (aimed == null)
-                                        {
-                                                // No plain tap lines up (something on top of it):
-                                                // long-press and pick the action from the menu.
-                                                menuWalk(gen, fingerDown, p, wanted, victim);
-                                                return;
-                                        }
-                                        fingerDown = aimed;
-                                }
-
-                                long pressStart = System.currentTimeMillis();
-                                // Micro drift while the finger is pressed (30% of taps): a tiny
-                                // two-axis sine/cosine wobble, well under the driver's drag slop.
-                                if (random.nextInt(100) < 30)
-                                {
-                                        double ampX = 1.2d + random.nextDouble() * 2.2d;
-                                        double ampY = 1.2d + random.nextDouble() * 2.2d;
-                                        double freqX = 0.7d + random.nextDouble() * 1.3d;
-                                        double freqY = 0.7d + random.nextDouble() * 1.3d;
-                                        double phase = random.nextDouble() * 2.0d * Math.PI;
-                                        int n = 1 + random.nextInt(3);
-                                        for (int i = 0; i < n && !aborted(gen); i++)
-                                        {
-                                                if (!sleep(12 + random.nextInt(13)))
-                                                {
-                                                        return;
-                                                }
-                                                double t = (i + 1) * 0.4d;
-                                                int mx = fingerDown[0] + (int) Math.round(ampX * Math.sin(2.0d * Math.PI * freqX * t + phase));
-                                                int my = fingerDown[1] + (int) Math.round(ampY * Math.cos(2.0d * Math.PI * freqY * t + phase * 1.618d));
-                                                emitMove(gen, mx, my);
-                                        }
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                }
-
-                                int tapDur = personaTapDur(p);
-                                long elapsed = System.currentTimeMillis() - pressStart;
-                                if (!sleep(Math.max(8, tapDur - (int) elapsed)) || aborted(gen))
-                                {
-                                        return;
-                                }
-                                emitBurst(gen, fingerDown[0], fingerDown[1], MouseEvent.BUTTON1);
-                                lastX = fingerDown[0];
-                                lastY = fingerDown[1];
-
-                                if (misclick)
-                                {
-                                        // The slip is noticed: the correction tap lands exactly
-                                        // 50-97ms after the misclick burst.
-                                        long slipAt = System.currentTimeMillis();
-                                        int gap = MISCORRECT_MIN_MS + random.nextInt(MISCORRECT_MAX_MS - MISCORRECT_MIN_MS + 1);
-                                        if (!sleep(Math.max(6, gap - 45)) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        int[] fix = refreshPoint(gen, victim, placement, target);
-                                        if (fix == null || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitMove(gen, fix[0], fix[1]);
-                                        if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitMove(gen, fix[0], fix[1]);
-                                        long remaining = slipAt + gap - System.currentTimeMillis();
-                                        if (remaining > 0 && !sleep((int) remaining))
-                                        {
-                                                return;
-                                        }
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitBurst(gen, fix[0], fix[1], MouseEvent.BUTTON1);
-                                        lastX = fix[0];
-                                        lastY = fix[1];
-                                        if (config.logInput())
-                                        {
-                                                Log.i(LOG_TAG, "misclick corrected after ~" + gap + "ms");
-                                        }
-                                }
-                        }
-                        finally
-                        {
-                                busy = false;
-                        }
-                }
-
-                /** Plain tap on a fixed point, with the same finger shape as every other tap. */
-                private void runTap(int gen, Persona p, int[] pt, int[] dismiss, int pad)
-                {
-                        try
-                        {
-                                if (dismiss != null && !dismissMenu(gen, dismiss))
-                                {
-                                        return;
-                                }
-                                if (!sleep(pad) || aborted(gen))
-                                {
-                                        return;
-                                }
-                                if (random.nextInt(100) < p.approachChance && lastX >= 0)
-                                {
-                                        approachTrail(gen, pt[0], pt[1]);
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                }
-                                emitMove(gen, pt[0], pt[1]);
-                                if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                                {
-                                        return;
-                                }
-                                emitMove(gen, pt[0], pt[1]);
-                                if (!sleep(personaTapDur(p)) || aborted(gen))
-                                {
-                                        return;
-                                }
-                                emitBurst(gen, pt[0], pt[1], MouseEvent.BUTTON1);
-                                lastX = pt[0];
-                                lastY = pt[1];
-                        }
-                        finally
-                        {
-                                busy = false;
-                        }
-                }
-
-                /**
-                 * One shift-drop pass. The gap between taps rides the same wave the order was
-                 * built from (fast through the troughs, a touch slower over the crests) with a
-                 * little jitter on top, so the rhythm is quick but never metronomic.
-                 */
-                private void runShiftDrops(int gen, Persona p, List<DropTarget> targets, int[] dismiss)
-                {
-                        boolean pressedShift = false;
-                        try
-                        {
-                                if (dismiss != null && !dismissMenu(gen, dismiss))
-                                {
-                                        return;
-                                }
-                                pressedShift = setShift(true);
-                                if (!sleep(70 + random.nextInt(90)) || aborted(gen))
-                                {
-                                        return;
-                                }
-
-                                final double base = 55d + random.nextInt(30);
-                                final double swing = 25d + random.nextInt(45);
-                                for (DropTarget target : targets)
-                                {
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitMove(gen, target.x, target.y);
-                                        if (!sleep(4 + random.nextInt(10)) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitMove(gen, target.x, target.y);
-                                        if (!sleep(18 + random.nextInt(30)) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitBurst(gen, target.x, target.y, MouseEvent.BUTTON1);
-                                        if (config.logInput())
-                                        {
-                                                Log.i(LOG_TAG, "shift-drop: slot " + target.slot + " " + target.label);
-                                        }
-
-                                        int gap = (int) Math.round(base + swing * (target.wave + 1d) / 2d) + random.nextInt(25);
-                                        if (random.nextInt(100) < 4)
-                                        {
-                                                gap += 80 + random.nextInt(160); // the odd thumb re-grip
-                                        }
-                                        if (!sleep(gap))
-                                        {
-                                                return;
-                                        }
-                                }
-                                // Let the last tap land before shift comes up.
-                                sleep(60 + random.nextInt(80));
-                        }
-                        finally
-                        {
-                                if (pressedShift)
-                                {
-                                        setShift(false);
-                                }
-                                busy = false;
-                        }
-                }
-
-                /**
-                 * Engages or releases shift through the same sticky modifier the on-screen
-                 * Shift chip uses (it keeps the key held with a heartbeat). Only touches it when
-                 * the state actually needs to change.
-                 *
-                 * @return true when this call changed the shift state
-                 */
-                private boolean setShift(boolean down)
-                {
-                        CountDownLatch done = new CountDownLatch(1);
-                        boolean[] changed = {false};
-                        new Handler(Looper.getMainLooper()).post(() ->
-                        {
-                                try
-                                {
-                                        boolean active = Boolean.TRUE.equals(ModifierState.INSTANCE.getShiftActive().getValue());
-                                        if (active != down)
-                                        {
-                                                ModifierState.INSTANCE.toggleShift();
-                                                changed[0] = true;
-                                        }
-                                }
-                                catch (RuntimeException e)
-                                {
-                                        Log.w(LOG_TAG, "could not change shift state", e);
-                                }
-                                finally
-                                {
-                                        done.countDown();
-                                }
-                        });
-                        try
-                        {
-                                done.await(500, TimeUnit.MILLISECONDS);
-                        }
-                        catch (InterruptedException e)
-                        {
-                                Thread.currentThread().interrupt();
-                        }
-                        return changed[0];
-                }
-
-                /**
-                 * One batch of inventory drops. Each item is long-pressed, the finger is walked
-                 * onto the "Drop" row and the row is clicked; the pauses between items are what
-                 * a player's hands do while emptying a bag — quickish, uneven, never metronomic.
-                 */
-                private void runDrops(int gen, Persona p, List<DropTarget> targets, int[] dismiss, int pad)
-                {
-                        try
-                        {
-                                if (dismiss != null && !dismissMenu(gen, dismiss))
-                                {
-                                        return;
-                                }
-
-                                boolean first = true;
-                                for (DropTarget target : targets)
-                                {
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        int gap = first ? Math.max(20, pad) : 260 + random.nextInt(420);
-                                        first = false;
-                                        if (!sleep(gap) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-
-                                        if (random.nextInt(100) < p.approachChance && lastX >= 0)
-                                        {
-                                                approachTrail(gen, target.x, target.y);
-                                                if (aborted(gen))
-                                                {
-                                                        return;
-                                                }
-                                        }
-
-                                        // Finger down on the slot: park the cursor, then hold perfectly
-                                        // still — any movement would turn the long-press into a camera drag.
-                                        emitMove(gen, target.x, target.y);
-                                        if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitMove(gen, target.x, target.y);
-
-                                        int longPress = ViewConfiguration.getLongPressTimeout() + random.nextInt(35);
-                                        if (!sleep(longPress) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitBurst(gen, target.x, target.y, MouseEvent.BUTTON3);
-                                        lastX = target.x;
-                                        lastY = target.y;
-
-                                        // Ask the client thread where the "Drop" row was drawn.
-                                        requestMenuScan("Drop", null);
-                                        long deadline = System.currentTimeMillis() + 900;
-                                        while (menuScanPending && menuActionPoint == null
-                                                && System.currentTimeMillis() < deadline && !aborted(gen))
-                                        {
-                                                if (!sleep(12))
-                                                {
-                                                        return;
-                                                }
-                                        }
-                                        int[] row = menuActionPoint;
-                                        int kind = menuActionKind;
-                                        menuActionPoint = null;
-                                        menuScanPending = false;
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-
-                                        if (row == null || kind == 0)
-                                        {
-                                                // Menu state unreadable; skip this item and try the next.
-                                                if (config.logInput())
-                                                {
-                                                        Log.w(LOG_TAG, "drop: could not locate the Drop row for " + target.label);
-                                                }
-                                                continue;
-                                        }
-
-                                        if (kind == 2)
-                                        {
-                                                // No Drop row (item already gone?): tap the menu away.
-                                                emitMove(gen, row[0], row[1]);
-                                                if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                                                {
-                                                        return;
-                                                }
-                                                emitMove(gen, row[0], row[1]);
-                                                if (!sleep(personaTapDur(p)) || aborted(gen))
-                                                {
-                                                        return;
-                                                }
-                                                emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
-                                                continue;
-                                        }
-
-                                        // "Read" the menu for a moment, then drag the finger onto the option.
-                                        if (!sleep(120 + random.nextInt(280)) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        dragTo(gen, new int[]{target.x, target.y}, row, 200 + random.nextInt(320));
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        if (!sleep(25 + random.nextInt(60)) || aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
-                                        lastX = row[0];
-                                        lastY = row[1];
-                                        if (config.logInput())
-                                        {
-                                                Log.i(LOG_TAG, "drop: clicked the Drop row for " + target.label);
-                                        }
-
-                                        // Let the menu close and the item vanish before the next long-press.
-                                        if (!sleep(140 + random.nextInt(260)))
-                                        {
-                                                return;
-                                        }
-                                }
-                        }
-                        finally
-                        {
-                                busy = false;
-                        }
-                }
-
-                /**
-                 * Long-press to open the context menu, drag the finger to the wanted row
-                 * (a fishing action, "Drop", ...), and click it — the touch equivalent of
-                 * right-click → option.
-                 */
-                private void menuWalk(int gen, int[] down, Persona p, String wanted, Object target)
-                {
-                        // Finger down: park the cursor, then hold perfectly still — any movement
-                        // would turn the long-press into a camera drag.
-                        emitMove(gen, down[0], down[1]);
-                        if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                        {
-                                return;
-                        }
-                        emitMove(gen, down[0], down[1]);
-
-                        int longPress = ViewConfiguration.getLongPressTimeout() + random.nextInt(35);
-                        if (!sleep(longPress) || aborted(gen))
-                        {
-                                return;
-                        }
-                        emitBurst(gen, down[0], down[1], MouseEvent.BUTTON3);
-                        lastX = down[0];
-                        lastY = down[1];
-
-                        // Ask the client thread where the wanted row was drawn.
-                        requestMenuScan(wanted, target);
-                        long deadline = System.currentTimeMillis() + 900;
-                        while (menuScanPending && menuActionPoint == null
-                                && System.currentTimeMillis() < deadline && !aborted(gen))
-                        {
-                                if (!sleep(12))
-                                {
-                                        return;
-                                }
-                        }
-                        int[] row = menuActionPoint;
-                        int kind = menuActionKind;
-                        menuActionPoint = null;
-                        menuScanPending = false;
-                        if (aborted(gen))
-                        {
-                                return;
-                        }
-
-                        if (row == null || kind == 0)
-                        {
-                                // Menu state unreadable; leave it and let the next gesture's
-                                // menu-open guard tap it away.
-                                if (config.logInput())
-                                {
-                                        Log.w(LOG_TAG, "menu-walk: could not locate the '" + wanted + "' row");
-                                }
-                                return;
-                        }
-
-                        if (kind == 2)
-                        {
-                                // No wanted row (spot gone / wrong click): dismiss the menu.
-                                emitMove(gen, row[0], row[1]);
-                                if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                                {
-                                        return;
-                                }
-                                emitMove(gen, row[0], row[1]);
-                                if (!sleep(personaTapDur(p)) || aborted(gen))
-                                {
-                                        return;
-                                }
-                                emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
-                                return;
-                        }
-
-                        // "Read" the menu for a moment, then drag the finger onto the option.
-                        if (!sleep(150 + random.nextInt(300)) || aborted(gen))
-                        {
-                                return;
-                        }
-                        dragTo(gen, down, row, 220 + random.nextInt(380));
-                        if (aborted(gen))
-                        {
-                                return;
-                        }
-                        if (!sleep(25 + random.nextInt(60)) || aborted(gen))
-                        {
-                                return;
-                        }
-                        emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
-                        lastX = row[0];
-                        lastY = row[1];
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "menu-walk: clicked the '" + wanted + "' row at " + row[0] + "," + row[1]);
-                        }
-                }
-
-                /** Taps away an open context menu before doing anything else. */
-                private boolean dismissMenu(int gen, int[] dismiss)
-                {
-                        emitMove(gen, dismiss[0], dismiss[1]);
-                        if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                        {
-                                return false;
-                        }
-                        emitMove(gen, dismiss[0], dismiss[1]);
-                        if (!sleep(personaTapDur(persona)) || aborted(gen))
-                        {
-                                return false;
-                        }
-                        emitBurst(gen, dismiss[0], dismiss[1], MouseEvent.BUTTON1);
-                        return !aborted(gen) && sleep(160 + random.nextInt(240));
-                }
-
-                /**
-                 * Light finger slide toward the tap point: pure hover moves before the press,
-                 * riding a randomized sine-wave path (see {@link #harmonicPath}).
-                 */
-                private void approachTrail(int gen, int toX, int toY)
-                {
-                        double dist = Math.hypot(toX - lastX, toY - lastY);
-                        if (dist < 6)
-                        {
-                                return;
-                        }
-                        harmonicPath(gen, lastX, lastY, toX, toY, 160 + random.nextInt(300));
-                }
-
-                /** Drag path from one point to another along a randomized harmonic curve. */
-                private void dragTo(int gen, int[] from, int[] to, int durationMs)
-                {
-                        harmonicPath(gen, from[0], from[1], to[0], to[1], durationMs);
-                }
-
-                /**
-                 * Harmonic finger path from (x0, y0) to (x1, y1): a straight baseline eased
-                 * with smoothstep, plus randomized trigonometric components — a sine ripple
-                 * perpendicular to the line of travel (the finger wobbling across its
-                 * course), a finer, faster cosine tremor layered on top, and a cosine swell
-                 * along the direction of travel (the finger advancing and hesitating).
-                 * Amplitude, frequency and phase of every component are rolled fresh for
-                 * each gesture, so no two gestures ever trace the same curve; the sine
-                 * window fades the wobble to zero at both endpoints so the finger leaves
-                 * and arrives exactly on target.
-                 */
-                private void harmonicPath(int gen, double x0, double y0, double x1, double y1, int durationMs)
-                {
-                        double dx = x1 - x0;
-                        double dy = y1 - y0;
-                        double dist = Math.hypot(dx, dy);
-                        if (dist < 3)
-                        {
-                                return;
-                        }
-                        double ux = dx / dist;
-                        double uy = dy / dist;
-                        double px = -uy; // perpendicular unit vector
-                        double py = ux;
-
-                        // Random harmonics for this gesture.
-                        double rippleAmp = (0.05d + random.nextDouble() * 0.09d) * dist;
-                        double rippleCycles = 0.6d + random.nextDouble() * 1.9d;
-                        double ripplePhase = random.nextDouble() * 2.0d * Math.PI;
-                        double tremorAmp = (0.012d + random.nextDouble() * 0.035d) * dist;
-                        double tremorCycles = rippleCycles * (2.5d + random.nextDouble() * 2.5d);
-                        double tremorPhase = random.nextDouble() * 2.0d * Math.PI;
-                        double swellAmp = (0.03d + random.nextDouble() * 0.06d) * dist;
-                        double swellCycles = 0.5d + random.nextDouble() * 1.1d;
-                        double swellPhase = random.nextDouble() * 2.0d * Math.PI;
-
-                        int steps = Math.max(4, Math.min(34, (int) Math.round(dist / 11.0d)));
-                        double stepDur = Math.max(9.0d, durationMs / (double) steps);
-                        for (int i = 1; i <= steps; i++)
-                        {
-                                if (aborted(gen) || !sleep((int) stepDur + random.nextInt(3)))
-                                {
-                                        return;
-                                }
-                                double t = i / (double) steps;
-                                double u = t * t * (3.0d - 2.0d * t); // smoothstep: slow, fast, settle
-                                double window = Math.sin(Math.PI * t); // wobble fades at both ends
-                                double cross = rippleAmp * Math.sin(2.0d * Math.PI * rippleCycles * t + ripplePhase) * window
-                                        + tremorAmp * Math.cos(2.0d * Math.PI * tremorCycles * t + tremorPhase) * window;
-                                double swell = swellAmp * Math.cos(2.0d * Math.PI * swellCycles * t + swellPhase) * window;
-                                double x = x0 + dx * u + px * cross + ux * swell;
-                                double y = y0 + dy * u + py * cross + uy * swell;
-                                emitMove(gen, (int) Math.round(x), (int) Math.round(y));
-                        }
-                        if (!sleep(14 + random.nextInt(20)) || aborted(gen))
-                        {
-                                return;
-                        }
-                        emitMove(gen, (int) Math.round(x1), (int) Math.round(y1));
-                }
-
-                /**
-                 * Re-reads the spot's hull on the client thread and returns where the tap should
-                 * go now. Null means "abort the gesture" (spot gone or plugin stopping); the
-                 * previous point is kept when the hull cannot be recomputed.
-                 */
-                private int[] refreshPoint(int gen, TileObject victim, Placement placement, int[] fallback)
-                {
-                        final CountDownLatch done = new CountDownLatch(1);
-                        final int[][] out = {null};
-                        final boolean[] ok = {true};
-                        clientThread.invokeLater(() ->
-                        {
-                                try
-                                {
-                                        if (client.getGameState() != GameState.LOGGED_IN
-                                                || !isLiveTarget(victim))
-                                        {
-                                                ok[0] = false;
-                                        }
-                                        else
-                                        {
-                                                int[] fresh = objectTapPoint(victim, placement);
-                                                if (fresh != null)
-                                                {
-                                                        out[0] = fresh;
-                                                }
-                                        }
-                                }
-                                finally
-                                {
-                                        done.countDown();
-                                }
-                        });
-                        try
-                        {
-                                if (!done.await(150, TimeUnit.MILLISECONDS))
-                                {
-                                        // Client busy: keep the last known point.
-                                        return aborted(gen) ? null : fallback;
-                                }
-                        }
-                        catch (InterruptedException e)
-                        {
-                                Thread.currentThread().interrupt();
-                                return null;
-                        }
-                        if (!ok[0] || aborted(gen))
-                        {
-                                return null;
-                        }
-                        return out[0] != null ? out[0] : fallback;
-                }
-
-
-                /**
-                 * Lines the finger up before committing a tap: with the finger parked on the
-                 * aim point, read what a tap there would actually do (the client's top menu
-                 * entry). If it is not the wanted action on this exact target, slide to a
-                 * fresh, tighter point on the target and look again — up to three looks.
-                 *
-                 * @return the point to tap, or null when no plain tap lines up (use the menu)
-                 */
-                private int[] aimUntilHover(int gen, TileObject victim, String wanted, int[] start)
-                {
-                        int[] aim = start;
-                        for (int attempt = 0; attempt < 3; attempt++)
-                        {
-                                if (attempt > 0)
-                                {
-                                        int[] next = refreshPoint(gen, victim, Placement.TIGHT_BOX, null);
-                                        if (aborted(gen))
-                                        {
-                                                return null;
-                                        }
-                                        if (next == null)
-                                        {
-                                                return aim; // client busy or target gone: keep the old aim
-                                        }
-                                        emitMove(gen, next[0], next[1]);
-                                        if (!sleep(2 + random.nextInt(7)) || aborted(gen))
-                                        {
-                                                return null;
-                                        }
-                                        emitMove(gen, next[0], next[1]);
-                                        aim = next;
-                                }
-                                Boolean hit = hoverHits(gen, victim, wanted);
-                                if (aborted(gen))
-                                {
-                                        return null;
-                                }
-                                if (hit == null || hit)
-                                {
-                                        return aim;
-                                }
-                                if (config.logInput())
-                                {
-                                        Log.i(LOG_TAG, "aim check: tap would not '" + wanted + "' the target, re-aiming");
-                                }
-                        }
-                        return null;
-                }
-
-                /**
-                 * True when the client's left-click (top) menu entry under the parked finger is
-                 * {@code wanted} on {@code victim}; null when it could not be read in time. A
-                 * negative is re-read once a frame later so a slow frame is not taken as a miss.
-                 */
-                private Boolean hoverHits(int gen, TileObject victim, String wanted)
-                {
-                        for (int look = 0; look < 2; look++)
-                        {
-                                if (!sleep((look == 0 ? 28 : 22) + random.nextInt(20)) || aborted(gen))
-                                {
-                                        return null;
-                                }
-                                final CountDownLatch done = new CountDownLatch(1);
-                                final Boolean[] out = {null};
-                                clientThread.invokeLater(() ->
-                                {
-                                        try
-                                        {
-                                                if (client.isMenuOpen())
-                                                {
-                                                        return;
-                                                }
-                                                MenuEntry[] entries = client.getMenuEntries();
-                                                if (entries == null || entries.length == 0)
-                                                {
-                                                        out[0] = Boolean.FALSE;
-                                                        return;
-                                                }
-                                                MenuEntry top = entries[entries.length - 1];
-                                                String option = top.getOption() == null ? "" : Text.removeTags(top.getOption());
-                                                out[0] = objectMatches(top, victim) && option.equalsIgnoreCase(wanted);
-                                        }
-                                        finally
-                                        {
-                                                done.countDown();
-                                        }
-                                });
-                                try
-                                {
-                                        if (!done.await(150, TimeUnit.MILLISECONDS))
-                                        {
-                                                return null;
-                                        }
-                                }
-                                catch (InterruptedException e)
-                                {
-                                        Thread.currentThread().interrupt();
-                                        return null;
-                                }
-                                if (out[0] == null || out[0])
-                                {
-                                        return out[0];
-                                }
-                        }
-                        return Boolean.FALSE;
-                }
-
-                private void requestMenuScan(String option, Object target)
-                {
-                        menuScanTarget = target;
-                        menuActionPoint = null;
-                        menuActionKind = 0;
-                        menuScanWanted = option;
-                        menuScanRequestedAt = System.currentTimeMillis();
-                        menuScanPending = true;
-                }
-
-                // ---- emission (timeline thread -> Android main thread) ----
-
-                private void emitMove(int gen, int x, int y)
-                {
-                        if (aborted(gen))
-                        {
-                                return;
-                        }
-                        lastX = x;
-                        lastY = y;
-                        Handler h = main;
-                        if (h != null)
-                        {
-                                h.post(() ->
-                                {
-                                        if (running && gen == generation)
-                                        {
-                                                fireAwtMove(x, y);
-                                        }
-                                });
-                        }
-                }
-
-                private void emitBurst(int gen, int x, int y, int button)
-                {
-                        if (aborted(gen))
-                        {
-                                return;
-                        }
-                        lastX = x;
-                        lastY = y;
-                        Handler h = main;
-                        if (h != null)
-                        {
-                                h.post(() ->
-                                {
-                                        if (running && gen == generation)
-                                        {
-                                                fireAwtBurst(x, y, button);
-                                        }
-                                });
-                        }
-                }
-        }
-
-
-        // ---------------------------------------------------------------- AWT dispatch
-
-        /** Resolved dispatch target for a canvas point, mirroring the Compose touch driver. */
-        private static final class DispatchTarget
-        {
-                final Component target; // the component the driver would dispatch on
-                final Component hit;    // deepest component under the point
-                final int winX;
-                final int winY;
-                final int lx;
-                final int ly;
-
-                DispatchTarget(Component target, Component hit, int winX, int winY, int lx, int ly)
-                {
-                        this.target = target;
-                        this.hit = hit;
-                        this.winX = winX;
-                        this.winY = winY;
-                        this.lx = lx;
-                        this.ly = ly;
-                }
-        }
-
-        /** One parking {@code MOUSE_MOVED}, like the driver's hover tracker on a move/press. */
-        private void fireAwtMove(int canvasX, int canvasY)
-        {
-                Window window = Window.primaryFrame();
-                if (window == null)
-                {
-                        return;
-                }
-                DispatchTarget dt = resolveDispatchTarget(window, canvasX, canvasY);
-                if (dt == null)
-                {
-                        return;
-                }
-                fireMouse(dt.target, MouseEvent.MOUSE_MOVED, dt.lx, dt.ly, MouseEvent.NOBUTTON, false);
-        }
-
-        /**
-         * The four-event click burst the driver emits at finger-up: MOVED, PRESSED,
-         * RELEASED, CLICKED — all at the down position, with the press's button-down mask
-         * on PRESSED only.
-         */
-        private void fireAwtBurst(int canvasX, int canvasY, int button)
-        {
-                Window window = Window.primaryFrame();
-                if (window == null)
-                {
-                        return;
-                }
-                DispatchTarget dt = resolveDispatchTarget(window, canvasX, canvasY);
-                if (dt == null)
-                {
-                        return;
-                }
-                if (button == MouseEvent.BUTTON1 && dt.target instanceof Canvas
-                        && MobileScrollbars.tap(dt.lx, dt.ly))
-                {
-                        return;
-                }
-                fireMouse(dt.target, MouseEvent.MOUSE_MOVED, dt.lx, dt.ly, MouseEvent.NOBUTTON, false);
-                fireMouse(dt.target, MouseEvent.MOUSE_PRESSED, dt.lx, dt.ly, button, true);
-                fireMouse(dt.target, MouseEvent.MOUSE_RELEASED, dt.lx, dt.ly, button, false);
-                fireMouse(dt.target, MouseEvent.MOUSE_CLICKED, dt.lx, dt.ly, button, false);
-                clickDirectWidget(dt.hit, dt.winX, dt.winY, button);
-        }
-
-        /**
-         * Window-space hit test, walk up to the mouse-listener-bearing component, translate
-         * into that component's local coordinates — the same resolution the touch driver
-         * performs for every tap.
-         */
-        private DispatchTarget resolveDispatchTarget(Window window, int canvasX, int canvasY)
-        {
-                Canvas canvas = Canvas.latest();
-                if (canvas == null)
-                {
-                        return null;
-                }
-                Rectangle bounds = canvas.getBoundsInWindow();
-                if (bounds == null || bounds.width <= 0 || bounds.height <= 0)
-                {
-                        return null;
-                }
-                int[] mapped = MobileInventoryOverlay.mapInput(canvasX, canvasY, bounds.width, bounds.height);
-                if (mapped == null || mapped.length < 2 || mapped[0] < 0 || mapped[1] < 0)
-                {
-                        return null; // dead zone left by relocated interface panels
-                }
-                int winX = bounds.x + mapped[0];
-                int winY = bounds.y + mapped[1];
-
-                Component hit = hitTest(window, winX, winY);
-                if (hit == null)
-                {
-                        return null;
-                }
-                Component target = walkUpToListener(hit);
-                if (target == null)
-                {
-                        target = hit;
-                }
-                int[] local = localCoords(target, winX, winY);
-                return new DispatchTarget(target, hit, winX, winY, local[0], local[1]);
-        }
-
-        /** Deepest visible component containing the window point. */
-        private static Component hitTest(Window window, int winX, int winY)
-        {
-                return walkHit(window, winX, winY, 0, 0);
-        }
-
-        private static Component walkHit(Component c, int winX, int winY, int tx, int ty)
-        {
-                if (!c.isVisible() || c.getWidth() <= 0 || c.getHeight() <= 0)
-                {
-                        return null;
-                }
-                int ax = tx + (c instanceof Window ? 0 : c.getX());
-                int ay = ty + (c instanceof Window ? 0 : c.getY());
-                if (winX < ax || winY < ay || winX >= ax + c.getWidth() || winY >= ay + c.getHeight())
-                {
-                        return null;
-                }
-                Component deepest = c;
-                if (c instanceof Container)
-                {
-                        Component[] kids = ((Container) c).getComponents();
-                        for (int i = kids.length - 1; i >= 0; i--)
-                        {
-                                Component child = kids[i];
-                                if (child == null)
-                                {
-                                        continue;
-                                }
-                                Component sub = walkHit(child, winX, winY, ax, ay);
-                                if (sub != null)
-                                {
-                                        deepest = sub;
-                                        break;
-                                }
-                        }
-                }
-                return deepest;
-        }
-
-        private static Component walkUpToListener(Component c)
-        {
-                Component cur = c;
-                while (cur != null)
-                {
-                        if (cur.hasMouseListeners())
-                        {
-                                return cur;
-                        }
-                        cur = cur.getParent();
-                }
-                return null;
-        }
-
-        private static int[] localCoords(Component target, int winX, int winY)
-        {
-                int dx = 0;
-                int dy = 0;
-                Component cur = target;
-                while (cur != null && !(cur instanceof Window))
-                {
-                        dx += cur.getX();
-                        dy += cur.getY();
-                        cur = cur.getParent();
-                }
-                return new int[]{winX - dx, winY - dy};
-        }
-
-        private static void fireMouse(Component target, int id, int x, int y, int button, boolean pressed)
-        {
-                int mods = pressed ? buttonDownMask(button) : 0;
-                // Deliberately no keyboard modifier masks: the engine resolves shift/alt state
-                // from its own key array, and alt-masked clicks are dropped by its dispatcher.
-                target.dispatchMouseEvent(new MouseEvent(
-                        target, id, System.currentTimeMillis(), mods, x, y, 1,
-                        button == MouseEvent.BUTTON3, button));
-        }
-
-        private static int buttonDownMask(int button)
-        {
-                switch (button)
-                {
-                        case MouseEvent.BUTTON1:
-                                return InputEvent.BUTTON1_DOWN_MASK;
-                        case MouseEvent.BUTTON2:
-                                return InputEvent.BUTTON2_DOWN_MASK;
-                        case MouseEvent.BUTTON3:
-                                return InputEvent.BUTTON3_DOWN_MASK;
-                        default:
-                                return 0;
-                }
-        }
-
-        /** Compose-side widgets that are not reachable through AWT mouse listeners. */
-        private static void clickDirectWidget(Component hit, int winX, int winY, int button)
-        {
-                if (button != MouseEvent.BUTTON1)
-                {
-                        return;
-                }
-                if (hit instanceof javax.swing.JTabbedPane)
-                {
-                        javax.swing.JTabbedPane tabs = (javax.swing.JTabbedPane) hit;
-                        int[] local = localCoords(tabs, winX, winY);
-                        int idx = tabs.indexAtLocation(local[0], local[1]);
-                        if (idx >= 0)
-                        {
-                                tabs.setSelectedIndex(tabs.getSelectedIndex() == idx ? -1 : idx);
-                        }
-                }
-                else if (hit instanceof javax.swing.AbstractButton)
-                {
-                        ((javax.swing.AbstractButton) hit).doClick();
-                }
-        }
-
-        // ---------------------------------------------------------------- camera
-
-        /** One animated segment of a camera turn. */
-        private static final class CameraLeg
-        {
-                final int delta;
-                final int durationMs;
-                final boolean easeIn;  // true: starts slow and accelerates; false: flicks and settles
-                final double easeExp;
-
-                CameraLeg(int delta, int durationMs, boolean easeIn, double easeExp)
-                {
-                        this.delta = delta;
-                        this.durationMs = durationMs;
-                        this.easeIn = easeIn;
-                        this.easeExp = easeExp;
-                }
-        }
-
-        /** A sequence of legs applied to yaw or pitch, stepped on client ticks. */
-        private static final class CameraAnim
-        {
-                private final int from;
-                private final List<CameraLeg> legs;
-                private final long startMs;
-                private final IntConsumer apply;
-
-                CameraAnim(int from, List<CameraLeg> legs, long startMs, IntConsumer apply)
-                {
-                        this.from = from;
-                        this.legs = legs;
-                        this.startMs = startMs;
-                        this.apply = apply;
-                }
-
-                /** @return true when the animation has finished */
-                boolean step(long now)
-                {
-                        if (now < startMs)
-                        {
-                                return false;
-                        }
-                        long t = now - startMs;
-                        int cum = 0;
-                        long timeUsed = 0;
-                        for (int i = 0; i < legs.size(); i++)
-                        {
-                                CameraLeg leg = legs.get(i);
-                                if (t < timeUsed + leg.durationMs || i == legs.size() - 1)
-                                {
-                                        double p = leg.durationMs <= 0
-                                                ? 1.0d
-                                                : Math.min(1.0d, (t - timeUsed) / (double) leg.durationMs);
-                                        int value = from + cum + (int) Math.round(leg.delta * legEase(p, leg));
-                                        apply.accept(value);
-                                        return p >= 1.0d && i == legs.size() - 1;
-                                }
-                                cum += leg.delta;
-                                timeUsed += leg.durationMs;
-                        }
-                        return true;
-                }
-
-                private static double legEase(double p, CameraLeg leg)
-                {
-                        if (leg.easeIn)
-                        {
-                                return Math.pow(p, leg.easeExp);
-                        }
-                        return 1.0d - Math.pow(1.0d - p, leg.easeExp);
-                }
-        }
-
-        private static int clampPitch(int v)
-        {
-                return Math.max(PITCH_MIN, Math.min(PITCH_MAX, v));
-        }
-
-        private void rollNextTurnLogs()
-        {
-                int min = Math.max(config.cameraEveryMin(), 1);
-                int max = Math.max(config.cameraEveryMax(), min);
-                nextTurnLogs = logsSinceTurn + min + (max > min ? random.nextInt(max - min + 1) : 0);
-        }
-
-        /** Called on every counted log: turns the camera once the log threshold is reached. */
-        private void onLogCamera()
-        {
-                logsSinceTurn++;
-                if (!config.smartCamera() || yawAnim != null)
-                {
-                        return;
-                }
-                if (logsSinceTurn < nextTurnLogs)
-                {
-                        return;
-                }
-                logsSinceTurn = 0;
-                rollNextTurnLogs();
-                LocalPoint focus = voluntaryFocus();
-                if (focus != null)
-                {
-                        planYawTurn(focus, false);
-                }
-        }
-
-        /** Where a voluntary turn looks: mostly the current/next tree, sometimes the heat centre. */
-        private LocalPoint voluntaryFocus()
-        {
-                Player local = client.getLocalPlayer();
-                if (local == null || local.getLocalLocation() == null)
-                {
-                        return null;
-                }
-                WorldView wv = client.getTopLevelWorldView();
-
-                int roll = random.nextInt(100);
-                if (roll < 60)
-                {
-                        GameObject npc = currentTree != null ? currentTree : nextTree;
-                        if (npc != null && npc.getLocalLocation() != null)
-                        {
-                                return npc.getLocalLocation();
-                        }
-                }
-                if (roll < 85)
-                {
-                        WorldPoint centre = huntCenter(local);
-                        if (centre != null)
-                        {
-                                LocalPoint lp = centre.distanceTo(local.getWorldLocation()) == 0
-                                        ? local.getLocalLocation()
-                                        : (wv == null ? null : LocalPoint.fromWorld(wv, centre));
-                                if (lp != null)
-                                {
-                                        return lp;
-                                }
-                        }
-                }
-                // Otherwise: glance at a random spot inside the heat range.
-                WorldPoint centre = huntCenter(local);
-                if (centre == null)
-                {
-                        return local.getLocalLocation();
-                }
-                int r = Math.max(1, config.huntRadius());
-                WorldPoint wp = new WorldPoint(
-                        centre.getX() + signedJitter(r),
-                        centre.getY() + signedJitter(r),
-                        centre.getPlane());
-                LocalPoint lp = wv == null ? null : LocalPoint.fromWorld(wv, wp);
-                return lp != null ? lp : local.getLocalLocation();
-        }
-
-        /** Slow humanized turn to bring an off-screen target back into view (rate-limited). */
-        private void maybeRescueCamera(TileObject target)
-        {
-                if (!config.cameraRescue() || yawAnim != null)
-                {
-                        return;
-                }
-                long now = System.currentTimeMillis();
-                if (now - lastRescueMs < RESCUE_COOLDOWN_MS)
-                {
-                        return;
-                }
-                LocalPoint lp = target.getLocalLocation();
-                if (lp == null)
-                {
-                        return;
-                }
-                lastRescueMs = now;
-                planYawTurn(lp, true);
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "camera rescue turn toward off-screen target");
-                }
-        }
-
-        /**
-         * Plans a camera turn toward the focus point as a set of animated legs:
-         * a slow-starting, accelerating main pan (ease-in with a randomized exponent —
-         * never the same speed twice), sometimes hesitating mid-turn, sometimes
-         * overshooting and settling back (ease-out correction), sometimes stopping just
-         * short of the target and resting "behind" it, and sometimes landing on it with a
-         * little resting jitter. Pitch occasionally follows, slightly out of phase.
-         */
-        private void planYawTurn(LocalPoint focus, boolean rescue)
-        {
-                Player local = client.getLocalPlayer();
-                LocalPoint here = local == null ? null : local.getLocalLocation();
-                if (focus == null || here == null)
-                {
-                        return;
-                }
-
-                int dx = focus.getX() - here.getX();
-                int dy = focus.getY() - here.getY();
-                if (dx == 0 && dy == 0)
-                {
-                        return;
-                }
-                // Perspective projects with x1 = x*cos(yaw) + y*sin(yaw); x1 is the horizontal
-                // screen axis, so the target is centred when yaw = atan2(-dx, dy).
-                int goal = (int) Math.round(Math.atan2(-dx, dy) * JAU14_PER_RADIAN);
-
-                int from = client.getCameraYawTarget() & JAU14_MASK;
-                int half = (JAU14_MASK + 1) / 2;
-                int delta = Math.floorMod(goal - from + half, JAU14_MASK + 1) - half;
-                if (rescue)
-                {
-                        // Bring it into view, not dead centre: settle a little to one side of it,
-                        // the way a thumb drags until the target is "on screen enough".
-                        delta += (random.nextBoolean() ? 1 : -1) * (250 + random.nextInt(450));
-                }
-                else if (random.nextInt(100) < 20)
-                {
-                        // Occasionally spin the long way round, like a player twirling the camera.
-                        delta = delta > 0 ? delta - (JAU14_MASK + 1) : delta + (JAU14_MASK + 1);
-                }
-                if (Math.abs(delta) < CAMERA_DEADZONE)
-                {
-                        return;
-                }
-
-                int dir = delta > 0 ? 1 : -1;
-                int min = Math.max(config.cameraPanMinMs(), 200);
-                int max = Math.max(config.cameraPanMaxMs(), min);
-                double share = Math.min(Math.abs(delta) / (double) half, 1.0d);
-                double spread = 0.35d + 0.65d * share;
-                int duration = Math.max((int) (min + (max - min) * spread), min);
-                double easeExp = 1.7d + random.nextDouble() * 1.1d;
-
-                List<CameraLeg> legs = new ArrayList<>(3);
-                int outcome = rescue ? (random.nextInt(100) < 25 ? random.nextInt(30) : 60 + random.nextInt(40)) : random.nextInt(100);
-                if (outcome < 30)
-                {
-                        // Overshoot: fling past the target, then a quick ease-out settle back.
-                        int over = dir * (400 + random.nextInt(501));
-                        legs.add(new CameraLeg(delta + over, duration, true, easeExp));
-                        legs.add(new CameraLeg(-over + signedJitter(60), 250 + random.nextInt(300), false, 1.8d + random.nextDouble() * 1.2d));
-                }
-                else if (outcome < 60)
-                {
-                        // Undershoot: stop short and leave the camera resting a little behind.
-                        int under = dir * (200 + random.nextInt(451));
-                        legs.add(new CameraLeg(delta - under, duration, true, easeExp));
-                }
-                else
-                {
-                        // Land on the target, but never perfectly centred.
-                        legs.add(new CameraLeg(delta + signedJitter(60), duration, true, easeExp));
-                }
-
-                if (random.nextInt(100) < 25)
-                {
-                        // Hesitation: the finger pauses mid-turn, then carries on.
-                        CameraLeg first = legs.get(0);
-                        int firstDur = (int) (first.durationMs * 0.55d);
-                        int firstDelta = (int) Math.round(first.delta * 0.55d);
-                        legs.set(0, new CameraLeg(firstDelta, firstDur, first.easeIn, first.easeExp));
-                        legs.add(1, new CameraLeg(0, 80 + random.nextInt(171), true, 1.0d));
-                        legs.add(2, new CameraLeg(first.delta - firstDelta, Math.max(60, first.durationMs - firstDur), first.easeIn, first.easeExp));
-                }
-
-                yawAnim = new CameraAnim(from, legs, System.currentTimeMillis(),
-                        v -> client.setCameraYawTarget(v & JAU14_MASK));
-
-                if (random.nextInt(100) < (rescue ? 20 : 30))
-                {
-                        planPitchTurn(duration);
-                }
-
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "camera turn: delta=" + delta + " dur=" + duration + "ms legs=" + legs.size()
-                                + (rescue ? " (rescue)" : ""));
-                }
-        }
-
-        /** A small pitch drift alongside a yaw turn, starting slightly late. */
-        private void planPitchTurn(int yawDuration)
-        {
-                int from = client.getCameraPitchTarget();
-                int delta = signedJitter(1) * (60 + random.nextInt(101));
-                int target = clampPitch(from + delta);
-                delta = target - from;
-                if (Math.abs(delta) < 20)
-                {
-                        return;
-                }
-                int duration = Math.max(300, (int) (yawDuration * (0.6d + random.nextDouble() * 0.6d)));
-                List<CameraLeg> legs = new ArrayList<>(2);
-                if (random.nextInt(100) < 20)
-                {
-                        int over = (int) Math.signum(delta) * (30 + random.nextInt(41));
-                        legs.add(new CameraLeg(delta + over, duration, true, 1.6d + random.nextDouble()));
-                        legs.add(new CameraLeg(-over, 200 + random.nextInt(200), false, 2.0d));
-                }
-                else
-                {
-                        legs.add(new CameraLeg(delta, duration, true, 1.5d + random.nextDouble()));
-                }
-                pitchAnim = new CameraAnim(from, legs,
-                        System.currentTimeMillis() + 80 + random.nextInt(271),
-                        v -> client.setCameraPitchTarget(clampPitch(v)));
+                return (28 - GameHelpers.freeSlots(client)) + "/28";
         }
 
         // ---------------------------------------------------------------- events
@@ -4523,18 +784,12 @@ public class AutoWoodcutPlugin extends Plugin
         {
                 if (event.getGameState() == GameState.LOGIN_SCREEN || event.getGameState() == GameState.HOPPING)
                 {
-                        touch.cancelAll();
+                        input.reset();
                         trees.clear();
                         currentTree = null;
                         nextTree = null;
                         choppingTree = null;
                         clearAutomation();
-                        yawAnim = null;
-                        pitchAnim = null;
-                        menuScanPending = false;
-                        menuScanWanted = null;
-                        menuActionPoint = null;
-                        menuActionKind = 0;
                 }
         }
 
@@ -4548,7 +803,28 @@ public class AutoWoodcutPlugin extends Plugin
                 String message = Text.removeTags(String.valueOf(event.getMessage()));
                 if (message.startsWith("I can't reach that"))
                 {
-                        onCantReach();
+                        if (bankSession.isActive())
+                        {
+                                bankSession.onCantReach();
+                        }
+                        else if (returning)
+                        {
+                                walker.onCantReach();
+                        }
+                        else
+                        {
+                                GameObject t = pendingTree != null ? pendingTree : lastTree;
+                                if (t != null)
+                                {
+                                        markUnreachable(t);
+                                        pendingTree = null;
+                                        pendingTicks = 0;
+                                        if (nextTree == t)
+                                        {
+                                                nextTree = null;
+                                        }
+                                }
+                        }
                         return;
                 }
                 if (message.startsWith("You get some ") || message.startsWith("You get a "))
@@ -4559,7 +835,7 @@ public class AutoWoodcutPlugin extends Plugin
                         }
                         logs++;
                         notifier.notify(config.notifyLog(), message + " (" + logs + ")");
-                        onLogCamera();
+                        input.onProgress();
                 }
         }
 
@@ -4575,8 +851,8 @@ public class AutoWoodcutPlugin extends Plugin
                         sessionStart = Instant.now();
                 }
 
-                // Idle alert: only while trees are around, a session has started, and no bank trip is on.
-                if (currentTree == null && !trees.isEmpty() && sessionStart != null && bankStep == BankStep.NONE && !dropping)
+                boolean busyElsewhere = bankSession.isActive() || returning || dropping;
+                if (currentTree == null && !trees.isEmpty() && sessionStart != null && !busyElsewhere)
                 {
                         idleCount++;
                         if (idleCount >= config.idleTicks() && !idleNotified)
@@ -4591,132 +867,14 @@ public class AutoWoodcutPlugin extends Plugin
                         idleNotified = false;
                 }
 
-                maybeRotatePersona();
-
-                // Idle hover drifts while the axe swings — a finger idling on the glass.
-                if (config.autoChop() && currentTree != null && !touch.isBusy()
-                        && System.currentTimeMillis() >= nextHoverDriftAt)
-                {
-                        nextHoverDriftAt = System.currentTimeMillis() + 2500L + random.nextInt(3500);
-                        Persona p = persona;
-                        if (p != null && random.nextInt(100) < p.hoverChance)
-                        {
-                                touch.hoverDrift();
-                        }
-                }
-
+                input.onGameTick(config.autoChop() && currentTree != null);
                 automate();
         }
 
         @Subscribe
         public void onClientTick(ClientTick tick)
         {
-                serviceMenuScan();
-
-                long now = System.currentTimeMillis();
-                if (yawAnim != null && yawAnim.step(now))
-                {
-                        yawAnim = null;
-                }
-                if (pitchAnim != null && pitchAnim.step(now))
-                {
-                        pitchAnim = null;
-                }
-        }
-
-        private void serviceMenuScan()
-        {
-                if (!menuScanPending)
-                {
-                        return;
-                }
-
-                boolean open = client.isMenuOpen();
-                MenuEntry[] entries = open ? client.getMenuEntries() : null;
-                if (entries == null || entries.length == 0)
-                {
-                        // Give the menu a few frames to appear before giving up.
-                        if (System.currentTimeMillis() - menuScanRequestedAt < 600)
-                        {
-                                return;
-                        }
-                        finishMenuScan(0, 0, 0, 0);
-                        return;
-                }
-
-                double[] f = stretchFactors();
-                int menuX = (int) Math.round(client.getMenuX() * f[0]);
-                int menuY = (int) Math.round(client.getMenuY() * f[1]);
-                int menuW = (int) Math.round(client.getMenuWidth() * f[0]);
-                int menuH = (int) Math.round(client.getMenuHeight() * f[1]);
-
-                String wanted = menuScanWanted;
-                int idx = -1;
-                for (int i = 0; i < entries.length; i++)
-                {
-                        String option = entries[i].getOption();
-                        if (option != null && wanted != null && wanted.equalsIgnoreCase(Text.removeTags(option))
-                                && menuEntryIsTarget(entries[i], menuScanTarget))
-                        {
-                                idx = i;
-                                break;
-                        }
-                }
-
-                if (idx < 0 || menuW <= 0 || menuH <= 0)
-                {
-                        finishMenuScan(menuX, menuY, menuW, menuH);
-                        return;
-                }
-
-                int headerH = (int) Math.round(MENU_HEADER_HEIGHT * f[1]);
-                // The entries array is stored bottom-to-top: array index 0 is the LAST row
-                // drawn at the bottom of the menu, and the row directly under the header is
-                // length-1. The client's own hit test maps "row from top" r to array index
-                // length-1-r (cf. InteractHighlightOverlay.hoveredMenuEntry). Convert before
-                // positioning, or the drag aims at the vertically mirrored row — sweeping
-                // over every option on the way down and clicking "Cancel" instead of the
-                // wanted one.
-                int rowFromTop = entries.length - 1 - idx;
-                int rowH = (menuH - headerH) / entries.length;
-                if (rowH <= 0)
-                {
-                        rowH = Math.max(12, (int) Math.round(15 * f[1]));
-                }
-                int rowY = menuY + headerH + rowH * rowFromTop + rowH / 2 + signedJitter(Math.max(2, rowH / 6));
-                int rowX = menuX + (int) (menuW * (0.42d + random.nextDouble() * 0.18d));
-
-                if (!MobileHitTest.isMenuOptionAt(rowX, rowY))
-                {
-                        rowX = menuX + menuW / 2;
-                        rowY = menuY + headerH + rowH * rowFromTop + rowH / 2;
-                }
-                if (!MobileHitTest.isMenuOptionAt(rowX, rowY))
-                {
-                        finishMenuScan(menuX, menuY, menuW, menuH);
-                        return;
-                }
-
-                menuActionPoint = new int[]{rowX, rowY};
-                menuActionKind = 1;
-                menuScanPending = false;
-        }
-
-        /** Completes a menu scan with "no wanted row": produce a dismiss point instead. */
-        private void finishMenuScan(int menuX, int menuY, int menuW, int menuH)
-        {
-                int[] dismiss = playerDismissPoint(menuX, menuY, menuW, menuH);
-                if (dismiss != null)
-                {
-                        menuActionPoint = dismiss;
-                        menuActionKind = 2;
-                }
-                else
-                {
-                        menuActionPoint = null;
-                        menuActionKind = 0;
-                }
-                menuScanPending = false;
+                input.onClientTick();
         }
 
         @Subscribe
@@ -4730,7 +888,7 @@ public class AutoWoodcutPlugin extends Plugin
                 addCenterEntries(entry);
         }
 
-        /** Lets the player right-click (long-press) the ground and mark the heat centre. */
+        /** Lets the player long-press the ground and mark the heat centre. */
         private void addCenterEntries(MenuEntry entry)
         {
                 if (!config.useHuntRange() || entry.getType() != MenuAction.WALK)
@@ -4747,13 +905,11 @@ public class AutoWoodcutPlugin extends Plugin
                 {
                         return;
                 }
-
                 client.createMenuEntry(-1)
                         .setOption(SET_CENTER)
                         .setTarget("")
                         .setType(MenuAction.RUNELITE)
                         .onClick(e -> setCenter(point));
-
                 if (huntCenter != null)
                 {
                         client.createMenuEntry(-1)
@@ -4768,14 +924,6 @@ public class AutoWoodcutPlugin extends Plugin
         {
                 configManager.setConfiguration(AutoWoodcutConfig.GROUP, AutoWoodcutConfig.CENTER_KEY,
                         point == null ? "" : point.getX() + "," + point.getY() + "," + point.getPlane());
-                // ConfigChanged will reparse and rescan.
-        }
-
-        // ---------------------------------------------------------------- small helpers
-
-        private int signedJitter(int px)
-        {
-                return px <= 0 ? 0 : random.nextInt(2 * px + 1) - px;
         }
 
         // ---------------------------------------------------------------- overlay accessors
@@ -4815,6 +963,16 @@ public class AutoWoodcutPlugin extends Plugin
                 return ms <= 0 ? 0 : logs * 3_600_000.0 / ms;
         }
 
+        String getPersonaLabel()
+        {
+                return input == null ? "-" : input.getPersonaLabel();
+        }
+
+        long getMethodSwitchInSeconds()
+        {
+                return input == null ? -1 : input.getMethodSwitchInSeconds();
+        }
+
         /** The closest known spot for the selected tree, e.g. "Draynor Village (12)", or null. */
         String getNearestKnownSpot()
         {
@@ -4841,5 +999,11 @@ public class AutoWoodcutPlugin extends Plugin
         void resetCounter()
         {
                 resetSession();
+        }
+
+        /** For the Scripts panel: whether automation is on. */
+        public boolean isAutomationOn()
+        {
+                return config.autoChop();
         }
 }

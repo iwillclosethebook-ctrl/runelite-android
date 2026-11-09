@@ -35,12 +35,6 @@ public interface AutoWoodcutConfig extends Config
         @ConfigSection(name = "Automation", description = "Auto-chopping (off by default)", position = 5)
         String automationSection = "automation";
 
-        @ConfigSection(name = "Humanizer", description = "How human the simulated touch input looks", position = 6)
-        String humanSection = "human";
-
-        @ConfigSection(name = "Camera", description = "Occasional humanized camera turns", position = 7)
-        String cameraSection = "camera";
-
         @ConfigSection(name = "Heat range", description = "The area around the centre tile that is searched for trees", position = 8)
         String huntSection = "hunt";
 
@@ -255,10 +249,8 @@ public interface AutoWoodcutConfig extends Config
         @ConfigItem(
                 keyName = "autoChop",
                 name = "Auto-chop",
-                description = "Tap the next tree with simulated touch input: looks before every tap (re-aims when the "
-                        + "tap would not chop that tree), fixes lost taps straight away, occasional ground misclicks "
-                        + "corrected after 50-97ms, long-press menu gestures when needed, and an input style that rotates "
-                        + "every few minutes. Never uses internal menu calls.",
+                description = "Tap the next tree with simulated touch input. How the input looks (reactions, misclicks, "
+                        + "input styles, camera, walking) is set in the Humanizer plugin and shared by every script.",
                 section = automationSection,
                 position = 0
         )
@@ -278,195 +270,6 @@ public interface AutoWoodcutConfig extends Config
         default int treePool()
         {
                 return 2;
-        }
-
-        // ---- Humanizer ----
-
-        @Range(min = 0, max = 20)
-        @ConfigItem(
-                keyName = "reactionMin",
-                name = "Reaction min (ticks)",
-                description = "Shortest pause before an automated click (1 tick = 0.6s)",
-                section = humanSection,
-                position = 0
-        )
-        default int reactionMin()
-        {
-                return 2;
-        }
-
-        @Range(min = 0, max = 40)
-        @ConfigItem(
-                keyName = "reactionMax",
-                name = "Reaction max (ticks)",
-                description = "Longest pause before an automated click. Clamped to at least the minimum.",
-                section = humanSection,
-                position = 1
-        )
-        default int reactionMax()
-        {
-                return 6;
-        }
-
-        @Range(max = 100)
-        @ConfigItem(
-                keyName = "hesitateChance",
-                name = "Hesitate chance (%)",
-                description = "Chance of an extra 1-3 tick pause on top of the reaction delay",
-                section = humanSection,
-                position = 2
-        )
-        default int hesitateChance()
-        {
-                return 15;
-        }
-
-        @Range(max = 40)
-        @ConfigItem(
-                keyName = "misclickChance",
-                name = "Ground misclicks (%)",
-                description = "Chance a chop tap lands on the ground next to the tree. The correction tap back onto "
-                        + "the tree follows 50-97ms later, like a player noticing their slip. The active input style "
-                        + "scales this up or down a little. 0 disables.",
-                section = humanSection,
-                position = 3
-        )
-        default int misclickChance()
-        {
-                return 10;
-        }
-
-        @ConfigItem(
-                keyName = "rotateInputMethod",
-                name = "Rotate input style",
-                description = "Every few minutes, switch how the simulated finger behaves: quick tapper, cautious "
-                        + "menu-opener, hovering wanderer, weary grinder. Tap placement on the tree, reaction padding, "
-                        + "press duration and misclick rate all change with it.",
-                section = humanSection,
-                position = 4
-        )
-        default boolean rotateInputMethod()
-        {
-                return true;
-        }
-
-        @Range(min = 60, max = 900)
-        @ConfigItem(
-                keyName = "methodRotationMinSec",
-                name = "Style holds min (s)",
-                description = "Shortest time an input style stays active before switching. Default 180s = 3 minutes.",
-                section = humanSection,
-                position = 5
-        )
-        default int methodRotationMinSec()
-        {
-                return 180;
-        }
-
-        @Range(min = 60, max = 900)
-        @ConfigItem(
-                keyName = "methodRotationMaxSec",
-                name = "Style holds max (s)",
-                description = "Longest time an input style stays active. Clamped to at least the minimum. Default 240s = 4 minutes.",
-                section = humanSection,
-                position = 6
-        )
-        default int methodRotationMaxSec()
-        {
-                return 240;
-        }
-
-        @ConfigItem(
-                keyName = "logInput",
-                name = "Log input simulation",
-                description = "Write each dispatched gesture and camera turn to logcat (tag AutoWoodcut) for debugging",
-                section = humanSection,
-                position = 7
-        )
-        default boolean logInput()
-        {
-                return false;
-        }
-
-        // ---- Camera ----
-
-        @ConfigItem(
-                keyName = "smartCamera",
-                name = "Humanized camera",
-                description = "Turn the camera like a player resting their thumb on the screen: only once every few "
-                        + "logs (see below), always panning slowly with a soft start that speeds up, sometimes "
-                        + "overshooting the target and settling back, sometimes stopping just short of it.",
-                section = cameraSection,
-                position = 0
-        )
-        default boolean smartCamera()
-        {
-                return true;
-        }
-
-        @ConfigItem(
-                keyName = "cameraRescue",
-                name = "Turn to off-screen trees",
-                description = "When the next tree is fully off screen and a click is due, turn the camera to bring it "
-                        + "back into view (rate-limited to once every 15s, still a slow humanized pan, never a snap)",
-                section = cameraSection,
-                position = 1
-        )
-        default boolean cameraRescue()
-        {
-                return true;
-        }
-
-        @Range(min = 1, max = 50)
-        @ConfigItem(
-                keyName = "cameraEveryMin",
-                name = "Turn every (min logs)",
-                description = "Fewest logs between voluntary camera turns.",
-                section = cameraSection,
-                position = 2
-        )
-        default int cameraEveryMin()
-        {
-                return 5;
-        }
-
-        @Range(min = 1, max = 100)
-        @ConfigItem(
-                keyName = "cameraEveryMax",
-                name = "Turn every (max logs)",
-                description = "Most logs between voluntary camera turns. Clamped to at least the minimum.",
-                section = cameraSection,
-                position = 3
-        )
-        default int cameraEveryMax()
-        {
-                return 15;
-        }
-
-        @Range(min = 200, max = 6000)
-        @ConfigItem(
-                keyName = "cameraPanMinMs",
-                name = "Turn time min (ms)",
-                description = "Shortest time a camera turn takes. Bigger turns use the longer end of the range.",
-                section = cameraSection,
-                position = 4
-        )
-        default int cameraPanMinMs()
-        {
-                return 900;
-        }
-
-        @Range(min = 200, max = 8000)
-        @ConfigItem(
-                keyName = "cameraPanMaxMs",
-                name = "Turn time max (ms)",
-                description = "Longest time a camera turn takes. Clamped to at least the minimum.",
-                section = cameraSection,
-                position = 5
-        )
-        default int cameraPanMaxMs()
-        {
-                return 2200;
         }
 
         // ---- Heat range ----

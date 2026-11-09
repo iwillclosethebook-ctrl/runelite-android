@@ -16,6 +16,10 @@ public interface AutoFightConfig extends Config
         String NPC_IDS_KEY = "npcIds";
         String LOOT_ITEMS_KEY = "lootItems";
         String CENTER_KEY = "centerTile";
+        String FOOD_ITEMS_KEY = "foodItems";
+        String WITHDRAW_FOOD_KEY = "withdrawFood";
+        String WITHDRAW_ITEMS_KEY = "withdrawItems";
+        String KEEP_ITEMS_KEY = "keepItems";
 
         @ConfigSection(name = "Targets", description = "Which NPCs to highlight", position = 0)
         String targetsSection = "targets";
@@ -32,13 +36,13 @@ public interface AutoFightConfig extends Config
         @ConfigSection(name = "Automation", description = "Auto-attack and auto-loot (both off by default)", position = 4)
         String automationSection = "automation";
 
-        @ConfigSection(name = "Humanizer", description = "How human the simulated touch input looks", position = 5)
-        String humanSection = "human";
+        @ConfigSection(name = "Eating", description = "Auto-eat (off by default)", position = 5)
+        String eatSection = "eat";
 
-        @ConfigSection(name = "Camera", description = "Occasional humanized camera turns", position = 6)
-        String cameraSection = "camera";
+        @ConfigSection(name = "Banking", description = "Bank trips for loot and food (off by default)", position = 6)
+        String bankSection = "bank";
 
-        @ConfigSection(name = "Heat range", description = "The area around the centre tile that is searched for targets", position = 7)
+        @ConfigSection(name = "Heat range", description = "The area around the centre tile that is searched for targets", position = 8)
         String huntSection = "hunt";
 
         // ---- Targets ----
@@ -223,7 +227,8 @@ public interface AutoFightConfig extends Config
         @ConfigItem(
                 keyName = "autoAttack",
                 name = "Auto-attack",
-                description = "Attack the next free matching NPC with simulated touch input: taps at a fresh spot on the target each time, "
+                description = "Attack the next free matching NPC with simulated touch input (input feel is set in the Humanizer plugin). "
+                        + "Taps at a fresh spot on the target each time, "
                         + "occasional ground misclicks corrected after 50-97ms, long-press menu gestures when 'Attack' is not the "
                         + "left-click option, and an input style that rotates every few minutes. Never uses internal menu calls.",
                 section = automationSection,
@@ -271,208 +276,158 @@ public interface AutoFightConfig extends Config
                 return 8;
         }
 
-        // ---- Humanizer ----
-
-        @Range(min = 0, max = 20)
-        @ConfigItem(
-                keyName = "reactionMin",
-                name = "Reaction min (ticks)",
-                description = "Shortest pause before an automated click (1 tick = 0.6s)",
-                section = humanSection,
-                position = 0
-        )
-        default int reactionMin()
-        {
-                return 2;
-        }
-
-        @Range(min = 0, max = 40)
-        @ConfigItem(
-                keyName = "reactionMax",
-                name = "Reaction max (ticks)",
-                description = "Longest pause before an automated click. Clamped to at least the minimum.",
-                section = humanSection,
-                position = 1
-        )
-        default int reactionMax()
-        {
-                return 6;
-        }
-
-        @Range(max = 100)
-        @ConfigItem(
-                keyName = "hesitateChance",
-                name = "Hesitate chance (%)",
-                description = "Chance of an extra 1-3 tick pause on top of the reaction delay",
-                section = humanSection,
-                position = 2
-        )
-        default int hesitateChance()
-        {
-                return 15;
-        }
-
         @Range(min = 1, max = 5)
         @ConfigItem(
                 keyName = "targetPool",
                 name = "Target pool",
                 description = "Pick at random from the N nearest NPCs instead of always the closest (1 = always closest)",
-                section = humanSection,
-                position = 3
+                section = automationSection,
+                position = 4
         )
         default int targetPool()
         {
                 return 2;
         }
 
-        @Range(max = 40)
-        @ConfigItem(
-                keyName = "misclickChance",
-                name = "Ground misclicks (%)",
-                description = "Chance an attack tap lands on the ground next to the target. The correction tap back onto the "
-                        + "target follows 50-97ms later, like a player noticing their slip. The active input style scales this "
-                        + "up or down a little. 0 disables.",
-                section = humanSection,
-                position = 4
-        )
-        default int misclickChance()
-        {
-                return 10;
-        }
+        // ---- Eating ----
 
         @ConfigItem(
-                keyName = "rotateInputMethod",
-                name = "Rotate input style",
-                description = "Every few minutes, switch how the simulated finger behaves: quick tapper, cautious menu-opener, "
-                        + "hovering wanderer, weary grinder. Tap placement on the target, reaction padding, press duration and "
-                        + "misclick rate all change with it.",
-                section = humanSection,
-                position = 5
+                keyName = "autoEat",
+                name = "Auto-eat",
+                description = "Eat when HP drops to the threshold below (tap the food in the inventory, or long-press + 'Eat')",
+                section = eatSection,
+                position = 0
         )
-        default boolean rotateInputMethod()
-        {
-                return true;
-        }
-
-        @Range(min = 60, max = 900)
-        @ConfigItem(
-                keyName = "methodRotationMinSec",
-                name = "Style holds min (s)",
-                description = "Shortest time an input style stays active before switching. Default 180s = 3 minutes. "
-                        + "Set 60 with a 240 max for styles that last roughly 1-4 minutes instead.",
-                section = humanSection,
-                position = 6
-        )
-        default int methodRotationMinSec()
-        {
-                return 180;
-        }
-
-        @Range(min = 60, max = 900)
-        @ConfigItem(
-                keyName = "methodRotationMaxSec",
-                name = "Style holds max (s)",
-                description = "Longest time an input style stays active. Clamped to at least the minimum. Default 240s = 4 minutes.",
-                section = humanSection,
-                position = 7
-        )
-        default int methodRotationMaxSec()
-        {
-                return 240;
-        }
-
-        @ConfigItem(
-                keyName = "logInput",
-                name = "Log input simulation",
-                description = "Write each dispatched gesture and camera turn to logcat (tag AutoFight) for debugging",
-                section = humanSection,
-                position = 8
-        )
-        default boolean logInput()
+        default boolean autoEat()
         {
                 return false;
         }
 
-        // ---- Camera ----
-
         @ConfigItem(
-                keyName = "smartCamera",
-                name = "Humanized camera",
-                description = "Turn the camera like a player resting their thumb on the screen: only once every few kills "
-                        + "(see below), always panning slowly with a soft start that speeds up, sometimes overshooting the "
-                        + "target and settling back, sometimes stopping just short of it.",
-                section = cameraSection,
-                position = 0
-        )
-        default boolean smartCamera()
-        {
-                return true;
-        }
-
-        @ConfigItem(
-                keyName = "cameraRescue",
-                name = "Turn to off-screen targets",
-                description = "When the next target is fully off screen and an attack is due, turn the camera to bring it back "
-                        + "into view (rate-limited to once every 15s, still a slow humanized pan, never a snap)",
-                section = cameraSection,
+                keyName = FOOD_ITEMS_KEY,
+                name = "Food",
+                description = "Comma-separated food names or IDs, e.g. Lobster, Shark. Empty = anything in the inventory with an 'Eat' option.",
+                section = eatSection,
                 position = 1
         )
-        default boolean cameraRescue()
+        default String foodItems()
+        {
+                return "";
+        }
+
+        @Range(min = 10, max = 95)
+        @ConfigItem(
+                keyName = "eatAtPercent",
+                name = "Eat at HP (%)",
+                description = "Eat when HP falls to this percentage of max HP",
+                section = eatSection,
+                position = 2
+        )
+        default int eatAtPercent()
+        {
+                return 50;
+        }
+
+        @Range(max = 25)
+        @ConfigItem(
+                keyName = "eatJitter",
+                name = "Eat threshold wobble (%)",
+                description = "The threshold moves up or down by up to this much after every bite, so eating never happens at the same HP",
+                section = eatSection,
+                position = 3
+        )
+        default int eatJitter()
+        {
+                return 8;
+        }
+
+        // ---- Banking ----
+
+        @ConfigItem(
+                keyName = "bankEnabled",
+                name = "Bank trips",
+                description = "Walk to the nearest reachable bank (real path: doors, stairs, ladders, out of dungeons), deposit the "
+                        + "loot, withdraw food and the items below, then walk back to the fight area",
+                section = bankSection,
+                position = 0
+        )
+        default boolean bankEnabled()
+        {
+                return false;
+        }
+
+        @ConfigItem(keyName = "bankWhenFull", name = "Bank when full", description = "Start a bank trip when the inventory is full", section = bankSection, position = 1)
+        default boolean bankWhenFull()
         {
                 return true;
         }
 
-        @Range(min = 1, max = 50)
-        @ConfigItem(
-                keyName = "cameraEveryMin",
-                name = "Turn every (min kills)",
-                description = "Fewest kills between voluntary camera turns. A turn still only happens when this many kills "
-                        + "have been counted.",
-                section = cameraSection,
-                position = 2
-        )
-        default int cameraEveryMin()
+        @ConfigItem(keyName = "bankWhenOutOfFood", name = "Bank when out of food", description = "Start a bank trip when no food is left (needs 'Withdraw food')", section = bankSection, position = 2)
+        default boolean bankWhenOutOfFood()
         {
-                return 5;
+                return true;
         }
 
-        @Range(min = 1, max = 100)
+        @Range(max = 90)
         @ConfigItem(
-                keyName = "cameraEveryMax",
-                name = "Turn every (max kills)",
-                description = "Most kills between voluntary camera turns. Clamped to at least the minimum.",
-                section = cameraSection,
+                keyName = "panicHpPercent",
+                name = "Retreat at HP (%)",
+                description = "With no food left and HP at or below this, leave the fight for the bank right away (0 = never)",
+                section = bankSection,
                 position = 3
         )
-        default int cameraEveryMax()
+        default int panicHpPercent()
         {
-                return 15;
+                return 30;
         }
 
-        @Range(min = 200, max = 6000)
         @ConfigItem(
-                keyName = "cameraPanMinMs",
-                name = "Turn time min (ms)",
-                description = "Shortest time a camera turn takes. Bigger turns use the longer end of the range.",
-                section = cameraSection,
+                keyName = WITHDRAW_FOOD_KEY,
+                name = "Withdraw food",
+                description = "Food to take out of the bank, as name or ID with an amount, e.g. Lobster x15. The trip fails (and stops) if the bank has none.",
+                section = bankSection,
                 position = 4
         )
-        default int cameraPanMinMs()
+        default String withdrawFood()
         {
-                return 900;
+                return "";
         }
 
-        @Range(min = 200, max = 8000)
         @ConfigItem(
-                keyName = "cameraPanMaxMs",
-                name = "Turn time max (ms)",
-                description = "Longest time a camera turn takes. Clamped to at least the minimum.",
-                section = cameraSection,
+                keyName = WITHDRAW_ITEMS_KEY,
+                name = "Withdraw items",
+                description = "Other items to take out each trip, e.g. Brass key x1, 995 x1000 (name or ID, 'x amount' optional)",
+                section = bankSection,
                 position = 5
         )
-        default int cameraPanMaxMs()
+        default String withdrawItems()
         {
-                return 2200;
+                return "";
+        }
+
+        @ConfigItem(
+                keyName = KEEP_ITEMS_KEY,
+                name = "Never deposit",
+                description = "Items that stay in the inventory, e.g. Rune pouch, Teleport tab (food and withdraw items are kept automatically). A name matches any item containing it.",
+                section = bankSection,
+                position = 6
+        )
+        default String keepItems()
+        {
+                return "";
+        }
+
+        @Range(min = 10, max = 400)
+        @ConfigItem(
+                keyName = "bankMaxDistance",
+                name = "Max bank distance (tiles)",
+                description = "Banks further than this (straight line, dungeons measured from the surface above) are not considered",
+                section = bankSection,
+                position = 7
+        )
+        default int bankMaxDistance()
+        {
+                return 150;
         }
 
         // ---- Heat range ----

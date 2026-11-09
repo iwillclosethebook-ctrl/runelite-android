@@ -58,8 +58,14 @@ import net.runelite.mp.wear.WatchLink
 
 
 
+/** Package prefixes of the auto scripts and their helpers, shown in the Scripts tab only. */
+private val SCRIPT_PACKAGES = listOf("autofight", "autofish", "autowoodcut", "automine", "mobiledevtools", "humanizer")
+    .map { "net.runelite.client.plugins.$it." }
+
+internal fun isScriptRow(row: PluginRow): Boolean = SCRIPT_PACKAGES.any { row.rowKey.startsWith(it) }
+
 /**
- * Three top-level surfaces inside the same sidebar shell:
+ * Top-level surfaces inside the same sidebar shell (Scripts = our own auto scripts, kept apart):
  *  - {@link SidebarTab#PLUGINS}: list of installed plugins with toggles + gear shortcut.
  *    Identical to the pre-tabbed sidebar.
  *  - {@link SidebarTab#PROFILES}: original RuneLite Profiles panel through the Swing adapter.
@@ -72,6 +78,7 @@ import net.runelite.mp.wear.WatchLink
 internal enum class SidebarTab(val label: String)
 {
     PLUGINS("Plugins"),
+    SCRIPTS("Scripts"),
     PROFILES("Profiles"),
     EXTERNAL("External"),
 }
@@ -94,7 +101,8 @@ internal fun PluginSidebar(
         SidebarHeader(tab = tab, onTabChange = { tab = it })
         when (tab)
         {
-            SidebarTab.PLUGINS -> PluginsTab(onConfigure)
+            SidebarTab.PLUGINS -> PluginsTab(onConfigure, scripts = false)
+            SidebarTab.SCRIPTS -> PluginsTab(onConfigure, scripts = true)
             SidebarTab.PROFILES -> ProfilesTab()
             SidebarTab.EXTERNAL -> ExternalTab()
         }
@@ -173,7 +181,7 @@ private fun SidebarHeader(tab: SidebarTab, onTabChange: (SidebarTab) -> Unit)
 // --------------------------------------------------------------------------------------
 
 @Composable
-private fun PluginsTab(onConfigure: (PluginRow) -> Unit)
+private fun PluginsTab(onConfigure: (PluginRow) -> Unit, scripts: Boolean)
 {
     val plugins = remember { mutableStateListOf<PluginRow>() }
     var query by remember { mutableStateOf("") }
@@ -219,18 +227,27 @@ private fun PluginsTab(onConfigure: (PluginRow) -> Unit)
 
     Column(modifier = Modifier.fillMaxSize())
     {
-        SearchField(query, "Search plugins…") { query = it }
+        SearchField(query, if (scripts) "Search scripts…" else "Search plugins…") { query = it }
         // Pinned favorites sort to the top — within each group, fall back to the host's
         // existing alphabetical order from PluginBridge.list().
-        val source = if (query.isBlank()) plugins.toList()
-        else plugins.filter { it.displayName.contains(query, ignoreCase = true) }
+        // Our own scripts (AutoFight, AutoFish, ..., Humanizer, Dev Tools) live in their own tab.
+        val source = (if (query.isBlank()) plugins.toList()
+        else plugins.filter { it.displayName.contains(query, ignoreCase = true) })
+            .filter { isScriptRow(it) == scripts }
         val ordered = source.sortedWith(
             compareByDescending<PluginRow> { favorites.contains(it.rowKey) }
                 .thenBy { it.displayName.lowercase() }
         )
         if (ordered.isEmpty())
         {
-            EmptyState(if (plugins.isEmpty()) "Loading plugins…" else "No plugins match \"$query\".")
+            EmptyState(
+                when
+                {
+                    plugins.isEmpty() -> "Loading plugins…"
+                    query.isBlank() && scripts -> "No scripts installed."
+                    else -> "Nothing matches \"$query\"."
+                }
+            )
         }
         else
         {
