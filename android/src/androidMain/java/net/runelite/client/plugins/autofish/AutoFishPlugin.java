@@ -140,8 +140,8 @@ import net.runelite.mp.ui.bridge.ModifierState;
 )
 public class AutoFishPlugin extends Plugin
 {
-        private static final String SET_CENTER = "FISH-Set centre";
-        private static final String CLEAR_CENTER = "FISH-Clear centre";
+        private static final String SET_CENTER = "FISH-Set area centre";
+        private static final String CLEAR_CENTER = "FISH-Clear area centre";
 
         private static final String LOG_TAG = "AutoFish";
 
@@ -1128,7 +1128,7 @@ public class AutoFishPlugin extends Plugin
                 addCenterEntries(entry);
         }
 
-        /** Lets the player right-click (long-press) the ground and mark the heat centre. */
+        /** Lets the player right-click (long-press) the ground and mark the area centre. */
         private void addCenterEntries(MenuEntry entry)
         {
                 if (!config.useHuntRange() || entry.getType() != MenuAction.WALK)

@@ -42,7 +42,7 @@ public interface AutoFightConfig extends Config
         @ConfigSection(name = "Banking", description = "Bank trips for loot and food (off by default)", position = 6)
         String bankSection = "bank";
 
-        @ConfigSection(name = "Heat range", description = "The area around the centre tile that is searched for targets", position = 8)
+        @ConfigSection(name = "Area", description = "The area around the centre tile that is searched for targets", position = 8)
         String huntSection = "hunt";
 
         // ---- Targets ----
@@ -444,11 +444,11 @@ public interface AutoFightConfig extends Config
                 return 150;
         }
 
-        // ---- Heat range ----
+        // ---- Area ----
 
         @ConfigItem(
                 keyName = "useHuntRange",
-                name = "Limit to heat range",
+                name = "Limit to area",
                 description = "Only target NPCs inside a square around the centre tile. Type 6 in the radius and a 13x13 "
                         + "square around the centre is searched.",
                 section = huntSection,
@@ -462,7 +462,7 @@ public interface AutoFightConfig extends Config
         @Range(min = 1, max = 32)
         @ConfigItem(
                 keyName = "huntRadius",
-                name = "Heat radius (tiles)",
+                name = "Area radius (tiles)",
                 description = "Tiles out from the centre tile. 6 gives a 13x13 square. With no centre marked, the square "
                         + "follows you.",
                 section = huntSection,
@@ -475,9 +475,9 @@ public interface AutoFightConfig extends Config
 
         @ConfigItem(
                 keyName = CENTER_KEY,
-                name = "Heat centre tile",
-                description = "x,y,plane of the heat centre. Leave empty to centre on yourself, or right-click the ground "
-                        + "(long-press) and pick 'AF-Set centre' to mark it. 'AF-Clear centre' removes it.",
+                name = "Area centre tile",
+                description = "x,y,plane of the area centre. Leave empty to centre on yourself, or right-click the ground "
+                        + "(long-press) and pick 'AF-Set area centre' to mark it. 'AF-Clear area centre' removes it.",
                 section = huntSection,
                 position = 2
         )

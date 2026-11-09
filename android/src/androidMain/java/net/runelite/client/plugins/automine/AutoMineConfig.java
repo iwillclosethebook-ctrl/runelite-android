@@ -35,7 +35,7 @@ public interface AutoMineConfig extends Config
         @ConfigSection(name = "Automation", description = "Auto-mining (off by default)", position = 5)
         String automationSection = "automation";
 
-        @ConfigSection(name = "Heat range", description = "The area around the centre tile that is searched for rocks", position = 8)
+        @ConfigSection(name = "Area", description = "The area around the centre tile that is searched for rocks", position = 8)
         String huntSection = "hunt";
 
         enum FullInventoryMode
@@ -67,7 +67,7 @@ public interface AutoMineConfig extends Config
                 name = "When the inventory is full",
                 description = "Notify: stop and notify. Drop: shift-drop everything except the keep list along a fresh "
                         + "sine wave. Bank: walk to the nearest reachable bank along a real path "
-                        + "(doors, stairs, ladders), deposit everything except the keep list, then walk back to the heat centre.",
+                        + "(doors, stairs, ladders), deposit everything except the keep list, then walk back to the area centre.",
                 section = fullSection,
                 position = 0
         )
@@ -272,11 +272,11 @@ public interface AutoMineConfig extends Config
                 return 2;
         }
 
-        // ---- Heat range ----
+        // ---- Area ----
 
         @ConfigItem(
                 keyName = "useHuntRange",
-                name = "Limit to heat range",
+                name = "Limit to area",
                 description = "Only use rocks inside a square around the centre tile. Type 6 in the radius and a 13x13 "
                         + "square around the centre is searched. When banking, the plugin walks back to this centre.",
                 section = huntSection,
@@ -290,7 +290,7 @@ public interface AutoMineConfig extends Config
         @Range(min = 1, max = 32)
         @ConfigItem(
                 keyName = "huntRadius",
-                name = "Heat radius (tiles)",
+                name = "Area radius (tiles)",
                 description = "Tiles out from the centre tile. 6 gives a 13x13 square. With no centre marked, the "
                         + "square follows you.",
                 section = huntSection,
@@ -303,9 +303,9 @@ public interface AutoMineConfig extends Config
 
         @ConfigItem(
                 keyName = CENTER_KEY,
-                name = "Heat centre tile",
-                description = "x,y,plane of the heat centre. Leave empty to centre on yourself, or right-click the "
-                        + "ground (long-press) and pick 'MINE-Set centre' to mark it. 'MINE-Clear centre' removes it.",
+                name = "Area centre tile",
+                description = "x,y,plane of the area centre. Leave empty to centre on yourself, or right-click the "
+                        + "ground (long-press) and pick 'WC-Set area centre' to mark it. 'WC-Clear area centre' removes it.",
                 section = huntSection,
                 position = 2
         )

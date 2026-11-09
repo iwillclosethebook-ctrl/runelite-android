@@ -132,7 +132,7 @@ import net.runelite.client.util.Text;
  * fully off-screen target back into view when an attack is due, but with the same slow
  * humanized motion — never a snap.
  *
- * <h2>Heat range</h2>
+ * <h2>Area</h2>
  * Target search is limited to a square of tiles around a centre tile (marked by
  * right-clicking the ground, or centred on the player when none is marked). The ring of
  * the square and the centre tile are drawn in world space by {@code AutoFightHuntOverlay}.
@@ -152,8 +152,8 @@ public class AutoFightPlugin extends Plugin
 {
         private static final String TAG = "AF-Tag";
         private static final String UNTAG = "AF-Untag";
-        private static final String SET_CENTER = "AF-Set centre";
-        private static final String CLEAR_CENTER = "AF-Clear centre";
+        private static final String SET_CENTER = "AF-Set area centre";
+        private static final String CLEAR_CENTER = "AF-Clear area centre";
 
         private static final String LOG_TAG = "AutoFight";
 
@@ -1530,7 +1530,7 @@ public class AutoFightPlugin extends Plugin
                 }
         }
 
-        /** Lets the player right-click (long-press) the ground and mark the heat centre. */
+        /** Lets the player right-click (long-press) the ground and mark the area centre. */
         private void addCenterEntries(MenuEntry entry)
         {
                 if (!config.useHuntRange() || entry.getType() != MenuAction.WALK)

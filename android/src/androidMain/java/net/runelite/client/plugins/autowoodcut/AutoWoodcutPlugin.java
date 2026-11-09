@@ -64,8 +64,8 @@ import net.runelite.client.util.Text;
 )
 public class AutoWoodcutPlugin extends Plugin
 {
-        private static final String SET_CENTER = "WC-Set centre";
-        private static final String CLEAR_CENTER = "WC-Clear centre";
+        private static final String SET_CENTER = "WC-Set area centre";
+        private static final String CLEAR_CENTER = "WC-Clear area centre";
         private static final String LOG_TAG = "AutoWoodcut";
 
         /** Ticks to wait for a chop to start before trying again. */
@@ -888,7 +888,7 @@ public class AutoWoodcutPlugin extends Plugin
                 addCenterEntries(entry);
         }
 
-        /** Lets the player long-press the ground and mark the heat centre. */
+        /** Lets the player long-press the ground and mark the area centre. */
         private void addCenterEntries(MenuEntry entry)
         {
                 if (!config.useHuntRange() || entry.getType() != MenuAction.WALK)

@@ -17,6 +17,7 @@ import net.runelite.api.Point;
 import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.client.plugins.humanizer.AreaRenderer;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayPanel;
@@ -117,7 +118,7 @@ class AutoMineOverlay extends OverlayPanel
                 if (center != null)
                 {
                         panelComponent.getChildren().add(LineComponent.builder()
-                                .left("Centre")
+                                .left("Area")
                                 .right(center)
                                 .build());
                 }
@@ -222,7 +223,7 @@ class AutoMineRockOverlay extends Overlay
 }
 
 /**
- * Draws the heat range in world space: the ring of tiles at the configured radius around
+ * Draws the area in world space: the ring of tiles at the configured radius around
  * the centre tile, plus the centre tile itself. The ring is only drawn on the centre's
  * plane, and is thinned out for very large radii so phones are not drowned in polygons.
  */
@@ -250,71 +251,9 @@ class AutoMineHuntOverlay extends Overlay
                 {
                         return null;
                 }
-
-                WorldPoint centre = plugin.getHuntCenterWorld();
-                if (centre == null)
-                {
-                        return null;
-                }
-
-                WorldView wv = client.getTopLevelWorldView();
-                if (wv == null || wv.getPlane() != centre.getPlane())
-                {
-                        return null;
-                }
-
-                int radius = Math.min(config.huntRadius(), 32);
-                Color other = config.otherColor();
-                Color ringEdge = new Color(other.getRed(), other.getGreen(), other.getBlue(), Math.max(40, other.getAlpha() / 2));
-                Color ringFill = new Color(other.getRed(), other.getGreen(), other.getBlue(), 22);
-
-                // Thin the ring to every other tile once it gets big, so rendering stays cheap.
-                int stride = radius > 12 ? 2 : 1;
-                for (int dx = -radius; dx <= radius; dx++)
-                {
-                        for (int dy = -radius; dy <= radius; dy++)
-                        {
-                                if (Math.max(Math.abs(dx), Math.abs(dy)) != radius)
-                                {
-                                        continue;
-                                }
-                                if (stride == 2 && ((dx + dy) & 1) != 0)
-                                {
-                                        continue;
-                                }
-                                drawTile(graphics, wv, centre.getX() + dx, centre.getY() + dy, ringFill, ringEdge);
-                        }
-                }
-
-                Color next = config.nextColor();
-                Color centreEdge = new Color(next.getRed(), next.getGreen(), next.getBlue(), Math.max(120, next.getAlpha()));
-                Color centreFill = new Color(next.getRed(), next.getGreen(), next.getBlue(), 70);
-                drawTile(graphics, wv, centre.getX(), centre.getY(), centreFill, centreEdge);
-
+                AreaRenderer.render(graphics, client, plugin.getHuntCenterWorld(), config.huntRadius(),
+                        config.nextColor(), plugin.getCenterLabel() != null && !plugin.getCenterLabel().startsWith("self"));
                 return null;
         }
 
-        private void drawTile(Graphics2D graphics, WorldView wv, int worldX, int worldY, Color fill, Color edge)
-        {
-                LocalPoint lp = LocalPoint.fromWorld(wv, worldX, worldY);
-                if (lp == null)
-                {
-                        return;
-                }
-                Polygon poly = Perspective.getCanvasTilePoly(client, lp);
-                if (poly == null)
-                {
-                        return;
-                }
-                if (fill != null)
-                {
-                        graphics.setColor(fill);
-                        graphics.fillPolygon(poly);
-                }
-                if (edge != null)
-                {
-                        graphics.setColor(edge);
-                        graphics.drawPolygon(poly);
-                }
-        }
 }

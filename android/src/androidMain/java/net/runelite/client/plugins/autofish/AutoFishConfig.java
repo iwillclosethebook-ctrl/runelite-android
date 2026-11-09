@@ -38,7 +38,7 @@ public interface AutoFishConfig extends Config
         @ConfigSection(name = "Automation", description = "Auto-fishing and auto-dropping (both off by default)", position = 5)
         String automationSection = "automation";
 
-        @ConfigSection(name = "Heat range", description = "The area around the centre tile that is searched for spots", position = 8)
+        @ConfigSection(name = "Area", description = "The area around the centre tile that is searched for spots", position = 8)
         String huntSection = "hunt";
 
         enum FullInventoryMode
@@ -313,11 +313,11 @@ public interface AutoFishConfig extends Config
                 return 2;
         }
 
-        // ---- Heat range ----
+        // ---- Area ----
 
         @ConfigItem(
                 keyName = "useHuntRange",
-                name = "Limit to heat range",
+                name = "Limit to area",
                 description = "Only use spots inside a square around the centre tile. Type 6 in the radius and a 13x13 "
                         + "square around the centre is searched.",
                 section = huntSection,
@@ -331,7 +331,7 @@ public interface AutoFishConfig extends Config
         @Range(min = 1, max = 32)
         @ConfigItem(
                 keyName = "huntRadius",
-                name = "Heat radius (tiles)",
+                name = "Area radius (tiles)",
                 description = "Tiles out from the centre tile. 6 gives a 13x13 square. With no centre marked, the "
                         + "square follows you.",
                 section = huntSection,
@@ -344,9 +344,9 @@ public interface AutoFishConfig extends Config
 
         @ConfigItem(
                 keyName = CENTER_KEY,
-                name = "Heat centre tile",
-                description = "x,y,plane of the heat centre. Leave empty to centre on yourself, or right-click the "
-                        + "ground (long-press) and pick 'FISH-Set centre' to mark it. 'FISH-Clear centre' removes it.",
+                name = "Area centre tile",
+                description = "x,y,plane of the area centre. Leave empty to centre on yourself, or right-click the "
+                        + "ground (long-press) and pick 'FISH-Set area centre' to mark it. 'FISH-Clear area centre' removes it.",
                 section = huntSection,
                 position = 2
         )
