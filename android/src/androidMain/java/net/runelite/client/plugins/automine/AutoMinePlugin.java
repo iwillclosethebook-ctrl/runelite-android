@@ -590,7 +590,7 @@ public class AutoMinePlugin extends Plugin
                         else if (mode == AutoMineConfig.FullInventoryMode.BANK && !bankBlocked)
                         {
                                 returnPoint = huntCenter != null ? huntCenter : local.getWorldLocation();
-                                if (!bankSession.begin(local, config.bankMaxDistance(), this::isKept, Collections.emptyList()))
+                                if (!bankSession.begin(local, config.bankMaxDistance(), this::isKept, Collections.emptyList(), chosenBank()))
                                 {
                                         bankBlocked = true;
                                         notifier.notify(config.notifyFull(), "Inventory full — " + bankSession.failure());
@@ -1011,5 +1011,11 @@ public class AutoMinePlugin extends Plugin
         public boolean isAutomationOn()
         {
                 return config.autoMine();
+        }
+
+        /** The bank the user picked (this script's setting, or the shared Humanizer default); null = closest. */
+        private net.runelite.client.plugins.gamedata.BankLocation chosenBank()
+        {
+                return net.runelite.client.plugins.gamedata.BankPick.resolve(config.bankPick(), input.config().defaultBank());
         }
 }

@@ -1245,7 +1245,7 @@ public class AutoFightPlugin extends Plugin
                 returnPoint = huntCenter != null ? huntCenter : local.getWorldLocation();
                 pendingTarget = null;
                 pendingTicks = 0;
-                if (!bankSession.begin(local, config.bankMaxDistance(), this::keepOnDeposit, needs))
+                if (!bankSession.begin(local, config.bankMaxDistance(), this::keepOnDeposit, needs, chosenBank()))
                 {
                         bankBlocked = true;
                         notifier.notify(Notification.ON, "Bank trip impossible: " + bankSession.failure());
@@ -1676,5 +1676,11 @@ public class AutoFightPlugin extends Plugin
         void resetCounter()
         {
                 resetSession();
+        }
+
+        /** The bank the user picked (this script's setting, or the shared Humanizer default); null = closest. */
+        private net.runelite.client.plugins.gamedata.BankLocation chosenBank()
+        {
+                return net.runelite.client.plugins.gamedata.BankPick.resolve(config.bankPick(), input.config().defaultBank());
         }
 }

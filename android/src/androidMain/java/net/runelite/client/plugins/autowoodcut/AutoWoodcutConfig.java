@@ -102,6 +102,20 @@ public interface AutoWoodcutConfig extends Config
                 return true;
         }
 
+        @ConfigItem(
+                keyName = "bankPick",
+                name = "Bank",
+                description = "Which bank to use. 'Same as Humanizer default' uses the one bank set in the Humanizer "
+                        + "settings (shared by all scripts); 'Closest bank' picks the nearest usable one within the max "
+                        + "distance. A named bank is used at any distance.",
+                section = fullSection,
+                position = 3
+        )
+        default net.runelite.client.plugins.gamedata.BankPick bankPick()
+        {
+                return net.runelite.client.plugins.gamedata.BankPick.SHARED;
+        }
+
         @Range(min = 10, max = 250)
         @ConfigItem(
                 keyName = "bankMaxDistance",

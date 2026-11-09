@@ -123,6 +123,41 @@ public final class BankSession
          */
         public boolean begin(Player local, int maxDistance, IntPredicate keep, List<Need> needs)
         {
+                return begin(local, maxDistance, keep, needs, null);
+        }
+
+        /**
+         * Like {@link #begin(Player, int, IntPredicate, List)}, but goes to the bank the user
+         * picked ({@code chosen}) instead of the closest one. The pick is honoured at any
+         * distance; null means "closest usable bank within maxDistance".
+         */
+        public boolean begin(Player local, int maxDistance, IntPredicate keep, List<Need> needs, BankLocation chosen)
+        {
+                if (chosen != null)
+                {
+                        stop();
+                        this.keep = keep == null ? id -> false : keep;
+                        this.needs = needs == null ? Collections.emptyList() : new ArrayList<>(needs);
+                        WorldPoint here = local.getWorldLocation();
+                        if (here == null)
+                        {
+                                failure = "Player position unknown";
+                                return false;
+                        }
+                        String why = net.runelite.client.plugins.gamedata.BankPick.whyNot(client, chosen);
+                        if (why != null)
+                        {
+                                failure = why;
+                                return false;
+                        }
+                        candidates = new ArrayList<>(Collections.singletonList(chosen));
+                        step = Step.WALK;
+                        WorldPoint wp = chosen.getWorldPoint();
+                        int d = Math.min(cheb(here, wp), cheb(new WorldPoint(here.getX(), here.getY() % 6400, here.getPlane()), wp));
+                        walker.start(Collections.singletonList(wp), 3, d * 3 + 200);
+                        input.log("bank trip: chosen bank " + chosen.getDisplayName() + " (" + d + " tiles)");
+                        return true;
+                }
                 stop();
                 this.keep = keep == null ? id -> false : keep;
                 this.needs = needs == null ? Collections.emptyList() : new ArrayList<>(needs);

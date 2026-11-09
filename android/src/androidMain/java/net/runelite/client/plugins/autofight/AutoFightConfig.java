@@ -431,6 +431,20 @@ public interface AutoFightConfig extends Config
                 return "";
         }
 
+        @ConfigItem(
+                keyName = "bankPick",
+                name = "Bank",
+                description = "Which bank to use. 'Same as Humanizer default' uses the one bank set in the Humanizer "
+                        + "settings (shared by all scripts); 'Closest bank' picks the nearest usable one within the max "
+                        + "distance. A named bank is used at any distance.",
+                section = bankSection,
+                position = 7
+        )
+        default net.runelite.client.plugins.gamedata.BankPick bankPick()
+        {
+                return net.runelite.client.plugins.gamedata.BankPick.SHARED;
+        }
+
         @Range(min = 10, max = 400)
         @ConfigItem(
                 keyName = "bankMaxDistance",

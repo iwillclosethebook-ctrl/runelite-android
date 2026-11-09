@@ -16,6 +16,9 @@ public interface HumanizerConfig extends Config
 {
         String GROUP = "humanizer";
 
+        @ConfigSection(name = "Banking", description = "The bank all scripts use", position = -1)
+        String bankingSection = "banking";
+
         @ConfigSection(name = "Reactions", description = "Pauses before simulated taps", position = 0)
         String reactionSection = "reaction";
 
@@ -206,6 +209,14 @@ public interface HumanizerConfig extends Config
         default int typeMaxMs()
         {
                 return 210;
+        }
+
+        // ---- Banking ----
+
+        @ConfigItem(keyName = "defaultBank", name = "Default bank (all scripts)", description = "The bank every script uses when its own Bank setting is 'Same as Humanizer default'. 'Closest bank' = nearest usable one. The list is every bank in the game (from Microbot's bank data).", section = bankingSection, position = 0)
+        default net.runelite.client.plugins.gamedata.BankPick defaultBank()
+        {
+                return net.runelite.client.plugins.gamedata.BankPick.CLOSEST;
         }
 
         // ---- Keys & tabs ----
