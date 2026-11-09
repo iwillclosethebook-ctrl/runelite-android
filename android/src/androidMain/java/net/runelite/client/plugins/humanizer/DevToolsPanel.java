@@ -24,6 +24,9 @@ class DevToolsPanel extends PluginPanel
         private final PluginManager pluginManager;
         private final ConfigManager configManager;
         private final JCheckBox devMode = new JCheckBox("Dev mode");
+        private final javax.swing.JButton record = new javax.swing.JButton("● Record");
+        private final javax.swing.JButton shareLast = new javax.swing.JButton("Share last recording");
+        private final JLabel recState = new JLabel(" ");
         private final Map<String, JCheckBox> toggles = new LinkedHashMap<>();
         private final List<JCheckBox> all = new ArrayList<>();
         private final Timer refresh;
@@ -41,6 +44,17 @@ class DevToolsPanel extends PluginPanel
                 style(devMode);
                 devMode.addActionListener(e -> setDevMode(devMode.isSelected()));
                 add(devMode);
+
+                JLabel recTitle = new JLabel("<html>Recorder: everything within 20 tiles, every tick (NPCs and their tiles, "
+                        + "projectiles, effects, items, objects, hits, sounds, varbits). Stop to save and share.</html>");
+                recTitle.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+                add(recTitle);
+                record.addActionListener(e -> toggleRecording());
+                add(record);
+                recState.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+                add(recState);
+                shareLast.addActionListener(e -> net.runelite.client.plugins.mobiledevtools.DevRecorder.INSTANCE.shareLast());
+                add(shareLast);
 
                 addToggle("showNpcs", "NPC labels");
                 addToggle("showPlayers", "Player labels");
@@ -128,8 +142,39 @@ class DevToolsPanel extends PluginPanel
                 });
         }
 
+        private void toggleRecording()
+        {
+                net.runelite.client.plugins.mobiledevtools.DevRecorder rec = net.runelite.client.plugins.mobiledevtools.DevRecorder.INSTANCE;
+                if (rec.isRequested())
+                {
+                        rec.requestStop();
+                }
+                else
+                {
+                        setDevMode(true); // the recorder runs inside Mobile Dev Tools
+                        rec.requestStart();
+                }
+                update();
+        }
+
         private void update()
         {
+                net.runelite.client.plugins.mobiledevtools.DevRecorder rec = net.runelite.client.plugins.mobiledevtools.DevRecorder.INSTANCE;
+                record.setText(rec.isRequested() ? "■ Stop & share" : "● Record");
+                if (rec.isRecording())
+                {
+                        long t = rec.elapsedSeconds();
+                        recState.setText(String.format("Recording %d:%02d — %d KB", t / 60, t % 60, rec.bytesWritten() / 1024));
+                }
+                else if (rec.lastError() != null)
+                {
+                        recState.setText("Error: " + rec.lastError());
+                }
+                else
+                {
+                        recState.setText(rec.lastFile() == null ? " " : "Saved: " + new java.io.File(rec.lastFile()).getName());
+                }
+                shareLast.setEnabled(rec.lastFile() != null);
                 updating = true;
                 try
                 {

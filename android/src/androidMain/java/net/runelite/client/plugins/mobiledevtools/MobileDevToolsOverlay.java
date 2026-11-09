@@ -486,6 +486,7 @@ class MobileDevToolsInfoOverlay extends OverlayPanel
                 this.config = config;
                 setPosition(OverlayPosition.TOP_LEFT);
 
+                addMenuEntry(MenuAction.RUNELITE_OVERLAY, "Record / stop", "DevTools recorder", e -> plugin.toggleRecording());
                 addMenuEntry(MenuAction.RUNELITE_OVERLAY, "NPCs", "DevTools toggle", e -> plugin.toggleNpcs());
                 addMenuEntry(MenuAction.RUNELITE_OVERLAY, "Players", "DevTools toggle", e -> plugin.togglePlayers());
                 addMenuEntry(MenuAction.RUNELITE_OVERLAY, "Ground items", "DevTools toggle", e -> plugin.toggleGroundItems());
@@ -546,6 +547,17 @@ class MobileDevToolsInfoOverlay extends OverlayPanel
                         .left("FPS")
                         .right(String.valueOf(client.getFPS()))
                         .build());
+
+                DevRecorder rec = DevRecorder.INSTANCE;
+                if (rec.isRecording())
+                {
+                        long t = rec.elapsedSeconds();
+                        panelComponent.getChildren().add(LineComponent.builder()
+                                .left("● REC")
+                                .leftColor(Color.RED)
+                                .right(String.format("%d:%02d  %d KB", t / 60, t % 60, rec.bytesWritten() / 1024))
+                                .build());
+                }
 
                 Dimension real = client.getRealDimensions();
                 if (real != null)

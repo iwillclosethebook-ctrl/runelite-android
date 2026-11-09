@@ -7,7 +7,25 @@ import net.runelite.api.Client;
 import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
+import net.runelite.api.events.ActorDeath;
+import net.runelite.api.events.AreaSoundEffectPlayed;
+import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.DecorativeObjectDespawned;
+import net.runelite.api.events.DecorativeObjectSpawned;
+import net.runelite.api.events.GameObjectDespawned;
+import net.runelite.api.events.GameObjectSpawned;
+import net.runelite.api.events.GameTick;
+import net.runelite.api.events.GroundObjectDespawned;
+import net.runelite.api.events.GroundObjectSpawned;
+import net.runelite.api.events.HitsplatApplied;
+import net.runelite.api.events.ItemDespawned;
+import net.runelite.api.events.ItemSpawned;
 import net.runelite.api.events.MenuEntryAdded;
+import net.runelite.api.events.OverheadTextChanged;
+import net.runelite.api.events.SoundEffectPlayed;
+import net.runelite.api.events.VarbitChanged;
+import net.runelite.api.events.WallObjectDespawned;
+import net.runelite.api.events.WallObjectSpawned;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
@@ -69,6 +87,7 @@ public class MobileDevToolsPlugin extends Plugin
         @Override
         protected void shutDown()
         {
+                DevRecorder.INSTANCE.stopNow();
                 overlayManager.remove(overlay);
                 overlayManager.remove(infoOverlay);
         }
@@ -139,6 +158,128 @@ public class MobileDevToolsPlugin extends Plugin
         void toggleTileFlags()
         {
                 toggle(MobileDevToolsConfig.TILE_FLAGS_KEY, config.showTileFlags());
+        }
+
+        // ---------------------------------------------------------------- recorder
+
+        void toggleRecording()
+        {
+                if (DevRecorder.INSTANCE.isRequested())
+                {
+                        DevRecorder.INSTANCE.requestStop();
+                }
+                else
+                {
+                        DevRecorder.INSTANCE.requestStart();
+                }
+        }
+
+        @Subscribe
+        public void onGameTick(GameTick event)
+        {
+                DevRecorder.INSTANCE.onTick(client);
+        }
+
+        @Subscribe
+        public void onGameObjectSpawned(GameObjectSpawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "game", e.getGameObject(), true);
+        }
+
+        @Subscribe
+        public void onGameObjectDespawned(GameObjectDespawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "game", e.getGameObject(), false);
+        }
+
+        @Subscribe
+        public void onWallObjectSpawned(WallObjectSpawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "wall", e.getWallObject(), true);
+        }
+
+        @Subscribe
+        public void onWallObjectDespawned(WallObjectDespawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "wall", e.getWallObject(), false);
+        }
+
+        @Subscribe
+        public void onDecorativeObjectSpawned(DecorativeObjectSpawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "decor", e.getDecorativeObject(), true);
+        }
+
+        @Subscribe
+        public void onDecorativeObjectDespawned(DecorativeObjectDespawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "decor", e.getDecorativeObject(), false);
+        }
+
+        @Subscribe
+        public void onGroundObjectSpawned(GroundObjectSpawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "ground", e.getGroundObject(), true);
+        }
+
+        @Subscribe
+        public void onGroundObjectDespawned(GroundObjectDespawned e)
+        {
+                DevRecorder.INSTANCE.onObject(client, "ground", e.getGroundObject(), false);
+        }
+
+        @Subscribe
+        public void onItemSpawned(ItemSpawned e)
+        {
+                DevRecorder.INSTANCE.onItem(client, e.getTile(), e.getItem(), true);
+        }
+
+        @Subscribe
+        public void onItemDespawned(ItemDespawned e)
+        {
+                DevRecorder.INSTANCE.onItem(client, e.getTile(), e.getItem(), false);
+        }
+
+        @Subscribe
+        public void onHitsplatApplied(HitsplatApplied e)
+        {
+                DevRecorder.INSTANCE.onHitsplat(client, e.getActor(), e.getHitsplat().getAmount(), e.getHitsplat().getHitsplatType());
+        }
+
+        @Subscribe
+        public void onActorDeath(ActorDeath e)
+        {
+                DevRecorder.INSTANCE.onDeath(client, e.getActor());
+        }
+
+        @Subscribe
+        public void onChatMessage(ChatMessage e)
+        {
+                DevRecorder.INSTANCE.onText(String.valueOf(e.getType()), null, e.getMessage(), client);
+        }
+
+        @Subscribe
+        public void onOverheadTextChanged(OverheadTextChanged e)
+        {
+                DevRecorder.INSTANCE.onText("OVERHEAD", e.getActor(), e.getOverheadText(), client);
+        }
+
+        @Subscribe
+        public void onSoundEffectPlayed(SoundEffectPlayed e)
+        {
+                DevRecorder.INSTANCE.onSound(client, e.getSoundId(), e.getSource(), -1, -1, false);
+        }
+
+        @Subscribe
+        public void onAreaSoundEffectPlayed(AreaSoundEffectPlayed e)
+        {
+                DevRecorder.INSTANCE.onSound(client, e.getSoundId(), e.getSource(), e.getSceneX(), e.getSceneY(), true);
+        }
+
+        @Subscribe
+        public void onVarbitChanged(VarbitChanged e)
+        {
+                DevRecorder.INSTANCE.onVarbit(e.getVarbitId(), e.getVarpId(), e.getValue());
         }
 
         // ---------------------------------------------------------------- menu ID hints
