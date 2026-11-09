@@ -42,6 +42,7 @@ import net.runelite.api.MenuAction;
 import net.runelite.api.MenuEntry;
 import net.runelite.api.NPC;
 import net.runelite.client.plugins.gamedata.LocalReach;
+import net.runelite.client.plugins.humanizer.GameHelpers;
 import net.runelite.client.plugins.humanizer.HumanInput;
 import net.runelite.client.plugins.humanizer.HumanizerConfig;
 import net.runelite.client.plugins.humanizer.Target;
@@ -782,6 +783,11 @@ public class AutoFishPlugin extends Plugin
 
                         if (input.isBusy())
                         {
+                                return;
+                        }
+                        if (!GameHelpers.openInventoryTab(client, input))
+                        {
+                                waitTicks = 1; // tapped the inventory tab; drop once it is open
                                 return;
                         }
 

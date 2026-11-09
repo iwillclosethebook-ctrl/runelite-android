@@ -204,26 +204,61 @@ public final class GameHelpers
                 return out;
         }
 
+        /** VarClientID.TOPLEVEL_PANEL value of the inventory tab (same index Microbot's Rs2Tab uses). */
+        public static final int INVENTORY_TAB_INDEX = 3;
+
+        /** True when the inventory side tab is the open one (read from the client, like Microbot does). */
+        public static boolean inventoryTabOpen(Client client)
+        {
+                return client.getVarcIntValue(net.runelite.api.gameval.VarClientID.TOPLEVEL_PANEL) == INVENTORY_TAB_INDEX;
+        }
+
         /**
-         * Makes sure the inventory is showing: when it is hidden behind another side tab,
-         * taps the inventory tab button (found by its "Inventory" action) like a player would.
+         * Makes sure the inventory is showing before dropping / eating. Which tab is open is
+         * read the way Microbot reads it (the TOPLEVEL_PANEL client variable, 3 = inventory).
+         * Microbot then switches tabs with an internal client script or an F-key; we tap the
+         * inventory tab button instead, with the usual simulated finger. The button is found
+         * by its fixed interface ID for each layout (resizable classic, resizable modern,
+         * fixed), falling back to any visible widget with an "Inventory" action.
          *
-         * @return true when the inventory is visible now; false when a tap was sent instead
+         * @return true when the inventory is open now; false when a tab tap was sent (check again next tick)
          */
         public static boolean openInventoryTab(Client client, HumanInput input)
         {
-                net.runelite.api.widgets.Widget inv = client.getWidget(net.runelite.api.widgets.ComponentID.INVENTORY_CONTAINER);
-                if (inv != null && !inv.isHidden())
+                if (inventoryTabOpen(client))
                 {
                         return true;
                 }
-                net.runelite.api.widgets.Widget tab = findWidgetWithAction(client, "Inventory");
+                net.runelite.api.widgets.Widget tab = null;
+                int[] ids = {
+                        net.runelite.api.gameval.InterfaceID.ToplevelOsrsStretch.STONE3,
+                        net.runelite.api.gameval.InterfaceID.ToplevelPreEoc.STONE3,
+                        net.runelite.api.gameval.InterfaceID.Toplevel.STONE3,
+                };
+                for (int id : ids)
+                {
+                        net.runelite.api.widgets.Widget w = client.getWidget(id);
+                        if (w != null && !w.isHidden())
+                        {
+                                tab = w;
+                                break;
+                        }
+                }
+                if (tab == null)
+                {
+                        tab = findWidgetWithAction(client, "Inventory");
+                }
                 int[] p = tab == null ? null : input.widgetPoint(tab);
                 if (p == null)
                 {
-                        return true; // cannot find the tab: let the caller try anyway
+                        // No tab button to tap (inventory pinned open by the mobile layout?): carry on if it is visible.
+                        net.runelite.api.widgets.Widget inv = client.getWidget(net.runelite.api.widgets.ComponentID.INVENTORY_CONTAINER);
+                        return inv != null && !inv.isHidden();
                 }
-                input.tap(p, "inventory tab");
+                if (!input.isBusy())
+                {
+                        input.tap(p, "inventory tab");
+                }
                 return false;
         }
 

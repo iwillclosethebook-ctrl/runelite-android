@@ -617,6 +617,11 @@ public class AutoMinePlugin extends Plugin
                         {
                                 return;
                         }
+                        if (!GameHelpers.openInventoryTab(client, input))
+                        {
+                                waitTicks = 1; // tapped the inventory tab; drop once it is open
+                                return;
+                        }
                         List<HumanInput.DropTarget> plan = input.slotTargets(net.runelite.api.widgets.ComponentID.INVENTORY_CONTAINER,
                                 id -> !isKept(id));
                         if (plan.isEmpty())
