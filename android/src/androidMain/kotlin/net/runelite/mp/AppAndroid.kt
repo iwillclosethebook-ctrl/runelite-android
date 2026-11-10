@@ -833,6 +833,8 @@ private fun ComposeSplash() {
                         }
                     },
                     onInstall = { apk -> net.runelite.mp.update.UpdateChecker.install(context, apk) },
+                    failMessage = gate.failMessage,
+                    onSkip = if (gate.canSkip) ({ gate.skip() }) else null,
                 )
             }
         }
@@ -844,6 +846,8 @@ private fun UpdateCard(
     state: UpdateState,
     onUpdate: (net.runelite.mp.update.UpdateChecker.Release) -> Unit,
     onInstall: (java.io.File) -> Unit,
+    failMessage: String? = null,
+    onSkip: (() -> Unit)? = null,
 ) {
     val release = when (state) {
         is UpdateState.Available -> state.release
@@ -884,6 +888,15 @@ private fun UpdateCard(
                 )
             }
             else -> {
+                if (failMessage != null && state !is UpdateState.Failed) {
+                    androidx.compose.material3.Text(
+                        text = "Automatic install didn't finish: $failMessage",
+                        color = Color(0xFFFF8A80),
+                        fontSize = 12.sp,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
                 if (state is UpdateState.Failed) {
                     androidx.compose.material3.Text(
                         text = "Download failed: ${state.message}",
@@ -905,6 +918,11 @@ private fun UpdateCard(
                         },
                         color = Color.White,
                     )
+                }
+                if (onSkip != null) {
+                    androidx.compose.material3.TextButton(onClick = onSkip) {
+                        androidx.compose.material3.Text("Skip, start ${net.runelite.mp.update.UpdateChecker.currentTag}", color = Color(0xFFB0B0B0), fontSize = 12.sp)
+                    }
                 }
             }
         }
