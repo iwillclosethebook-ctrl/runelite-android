@@ -115,6 +115,7 @@ public final class HumanInput
 
         private long nextHoverDriftAt;
         private XpGlance xpGlance;
+        private int menuOpenIdleTicks;
         private volatile Skill trainedSkill;
 
         private final TouchEngine touch = new TouchEngine();
@@ -231,6 +232,18 @@ public final class HumanInput
         public void onGameTick(boolean waiting)
         {
                 maybeRotatePersona();
+                if (client.isMenuOpen() && !touch.isBusy())
+                {
+                        if (++menuOpenIdleTicks >= 3)
+                        {
+                                touch.closeStrayMenu();
+                                menuOpenIdleTicks = 0;
+                        }
+                }
+                else
+                {
+                        menuOpenIdleTicks = 0;
+                }
                 XpGlance xp = xpGlance();
                 // A finger resting on the next target is not to be disturbed.
                 xp.tick(client, trainedSkill, waiting && !touch.isParked());
@@ -296,9 +309,20 @@ public final class HumanInput
                 {
                         return false;
                 }
+                if (client.isMenuOpen())
+                {
+                        touch.closeStrayMenu();
+                        return false;
+                }
                 if (!visibleForTap(target))
                 {
                         rescueCamera(target);
+                        return false;
+                }
+                if (touch.menuFailsOn(target) >= 2 && yawAnim == null)
+                {
+                        // Picked from a crowded menu twice without luck: look from another angle.
+                        turnForBetterAngle(target);
                         return false;
                 }
                 if (touch.interact(target, action, quickRetry, allowMisclick, !defaultAction))
@@ -914,8 +938,59 @@ public final class HumanInput
                         (int) Math.round(client.getMenuHeight() * f[1]));
         }
 
-        /** A harmless tap point: the player's own tile, pushed out of the given menu rect. */
+        /**
+         * A harmless tap point to close the menu: the player's own tile pushed out of the
+         * menu, or, when that is covered (long menus from crowds of players), any open
+         * spot of the game view beside / above / below the menu.
+         */
         private int[] playerDismissPoint(int menuX, int menuY, int menuW, int menuH)
+        {
+                int[] p = playerTilePoint(menuX, menuY, menuW, menuH);
+                return p != null ? p : openSpotOutside(menuX, menuY, menuW, menuH);
+        }
+
+        private int[] openSpotOutside(int menuX, int menuY, int menuW, int menuH)
+        {
+                int w = canvasWidth();
+                int h = canvasHeight();
+                if (w <= 0 || h <= 0)
+                {
+                        return null;
+                }
+                int gap = 28 + random.nextInt(30);
+                int midY = menuY + menuH / 2;
+                int midX = menuX + menuW / 2;
+                int[][] cands = {
+                        {menuX - gap, midY}, {menuX + menuW + gap, midY},
+                        {midX, menuY - gap}, {midX, menuY + menuH + gap},
+                        {menuX - gap, menuY + 20}, {menuX + menuW + gap, menuY + 20},
+                        {w / 4, h / 3}, {w * 3 / 4, h / 3}, {w / 2, h / 5}, {w / 4, h * 2 / 3}, {w * 3 / 4, h * 2 / 3},
+                };
+                int start = random.nextInt(2) * 1;
+                for (int k = 0; k < cands.length; k++)
+                {
+                        int[] c = cands[(k + start) % cands.length];
+                        int x = c[0] + signedJitter(6);
+                        int y = c[1] + signedJitter(6);
+                        if (x < 8 || y < 8 || x > w - 9 || y > h - 9)
+                        {
+                                continue;
+                        }
+                        if (menuW > 0 && menuH > 0 && x >= menuX - 4 && x <= menuX + menuW + 4 && y >= menuY - 4 && y <= menuY + menuH + 4)
+                        {
+                                continue;
+                        }
+                        if (MobileHitTest.isInterfaceAt(x, y))
+                        {
+                                continue;
+                        }
+                        return new int[] {x, y};
+                }
+                return null;
+        }
+
+        /** The player's own tile, pushed out of the given menu rect (null if it can't be). */
+        private int[] playerTilePoint(int menuX, int menuY, int menuW, int menuH)
         {
                 Player local = client.getLocalPlayer();
                 WorldView wv = client.getTopLevelWorldView();
@@ -1223,7 +1298,10 @@ public final class HumanInput
 
                         Persona p = persona;
                         boolean parkedHere = isParkedOn(target) && parkedPoint != null && !menuForced;
-                        boolean useMenu = !parkedHere && (menuForced || random.nextInt(100) < p.menuChance);
+                        // The menu just failed on this target (crowded spot): try a plain,
+                        // aim-checked tap this time instead of another long-press.
+                        boolean menuFailedHere = menuFailsOn(target) > 0;
+                        boolean useMenu = !parkedHere && !menuFailedHere && (menuForced || random.nextInt(100) < p.menuChance);
                         Placement placement = useMenu ? Placement.TIGHT_BOX : p.placement;
 
                         int[] pt = parkedHere ? parkedPoint : tapPoint(target, placement);
@@ -2375,17 +2453,19 @@ public final class HumanInput
 
                         if (row == null || kind == 0)
                         {
-                                // Menu state unreadable; leave it and let the next gesture's
-                                // menu-open guard tap it away.
-                                if (config.logInput())
-                                {
-                                        Log.w(LOG_TAG, "menu-walk: could not locate the '" + wanted + "' row");
-                                }
+                                // Wanted row not usable and no obvious place to tap the menu away
+                                // (long menu from a crowd): slide off the menu and tap any open
+                                // spot, so the menu never stays stuck open.
+                                trace("menu-walk: no usable '" + wanted + "' row; closing the menu");
+                                noteMenuFail(target);
+                                closeStrayMenuNow(gen);
                                 return;
                         }
 
                         if (kind == 2)
                         {
+                                trace("menu-walk: '" + wanted + "' not in the menu; closing it");
+                                noteMenuFail(target);
                                 // No wanted row (spot gone / wrong click): dismiss the menu.
                                 emitMove(gen, row[0], row[1]);
                                 if (!sleep(2 + random.nextInt(7)) || aborted(gen))
@@ -2418,7 +2498,92 @@ public final class HumanInput
                         emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
                         lastX = row[0];
                         lastY = row[1];
+                        menuFails = 0;
+                        menuFailTarget = null;
                         trace("menu-walk: clicked the '" + wanted + "' row at " + row[0] + "," + row[1]);
+                }
+
+                private volatile Object menuFailTarget;
+                private volatile long menuFailAt;
+                private volatile int menuFails;
+
+                private void noteMenuFail(Object target)
+                {
+                        if (target != null && target.equals(menuFailTarget) && System.currentTimeMillis() - menuFailAt < 20000)
+                        {
+                                menuFails++;
+                        }
+                        else
+                        {
+                                menuFails = 1;
+                        }
+                        menuFailTarget = target;
+                        menuFailAt = System.currentTimeMillis();
+                }
+
+                /** Failed menu picks on this target in the last 20s (0 = none). */
+                int menuFailsOn(Object target)
+                {
+                        return target != null && target.equals(menuFailTarget) && System.currentTimeMillis() - menuFailAt < 20000 ? menuFails : 0;
+                }
+
+                /** Slides the finger well off the open menu, then taps an open spot if it is still up. */
+                private void closeStrayMenuNow(int gen)
+                {
+                        int[] away = callClient(gen, () -> client.isMenuOpen() ? currentMenuDismissPoint() : null, 0);
+                        if (away == null || aborted(gen))
+                        {
+                                return;
+                        }
+                        harmonicPath(gen, lastX, lastY, away[0], away[1], 90 + random.nextInt(90));
+                        emitMove(gen, away[0], away[1]);
+                        if (!sleep(120 + random.nextInt(120)) || aborted(gen))
+                        {
+                                return;
+                        }
+                        Boolean still = callClient(gen, client::isMenuOpen, 0);
+                        if (Boolean.TRUE.equals(still))
+                        {
+                                emitMove(gen, away[0], away[1]);
+                                if (!sleep(personaTapDur(persona)) || aborted(gen))
+                                {
+                                        return;
+                                }
+                                emitBurst(gen, away[0], away[1], MouseEvent.BUTTON1);
+                                sleep(120 + random.nextInt(160));
+                        }
+                }
+
+                /** Safety net: a menu left open with nothing in progress gets closed. */
+                boolean closeStrayMenu()
+                {
+                        if (!running || busy || !client.isMenuOpen())
+                        {
+                                return false;
+                        }
+                        final int gen = ++generation;
+                        busy = true;
+                        try
+                        {
+                                timeline.execute(() ->
+                                {
+                                        try
+                                        {
+                                                trace("closing a menu left open");
+                                                closeStrayMenuNow(gen);
+                                        }
+                                        finally
+                                        {
+                                                busy = false;
+                                        }
+                                });
+                        }
+                        catch (RuntimeException rejected)
+                        {
+                                busy = false;
+                                return false;
+                        }
+                        return true;
                 }
 
                 /** Taps away an open context menu before doing anything else. */
@@ -3279,6 +3444,35 @@ public final class HumanInput
                         centre.getPlane());
                 LocalPoint lp = wv == null ? null : LocalPoint.fromWorld(wv, wp);
                 return lp != null ? lp : local.getLocalLocation();
+        }
+
+        private long lastAngleTurnMs;
+
+        /**
+         * Turns the camera 40-75 degrees left or right (the game eases the turn at its own
+         * camera speed) so players standing on the target no longer overlap it.
+         */
+        private void turnForBetterAngle(Target target)
+        {
+                long now = System.currentTimeMillis();
+                if (now - lastAngleTurnMs < 2500)
+                {
+                        return;
+                }
+                lastAngleTurnMs = now;
+                int deg = 40 + random().nextInt(36);
+                int delta = (int) Math.round(deg * (JAU14_MASK + 1) / 360.0d);
+                if (random().nextBoolean())
+                {
+                        delta = -delta;
+                }
+                int from = client.getCameraYawTarget() & JAU14_MASK;
+                List<CameraLeg> legs = new ArrayList<>();
+                // Eased like the other camera turns: slow start, speeding up, then settle.
+                legs.add(new CameraLeg(delta, 520 + random().nextInt(420), true, 1.4d + random().nextDouble() * 0.8d));
+                yawAnim = new CameraAnim(from, legs, System.currentTimeMillis(), v -> client.setCameraYawTarget(v & JAU14_MASK));
+                touch.menuFails = 1; // one more plain try from the new angle before turning again
+                log("crowded menu twice: turning the camera " + (delta > 0 ? "+" : "-") + deg + " deg for a clearer angle");
         }
 
         /** Slow humanized turn to bring an off-screen spot back into view (rate-limited). */
