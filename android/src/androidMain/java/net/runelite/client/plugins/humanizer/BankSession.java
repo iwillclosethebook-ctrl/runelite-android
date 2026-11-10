@@ -137,7 +137,9 @@ public final class BankSession
                 if (chosen != null)
                 {
                         stop();
-                        this.keep = keep == null ? id -> false : keep;
+                        this.keep = keep == null
+                        ? id -> net.runelite.client.plugins.gamedata.Transport.isRequiredItem(id)
+                        : id -> keep.test(id) || net.runelite.client.plugins.gamedata.Transport.isRequiredItem(id);
                         this.needs = needs == null ? Collections.emptyList() : new ArrayList<>(needs);
                         WorldPoint here = local.getWorldLocation();
                         if (here == null)
@@ -160,7 +162,9 @@ public final class BankSession
                         return true;
                 }
                 stop();
-                this.keep = keep == null ? id -> false : keep;
+                this.keep = keep == null
+                        ? id -> net.runelite.client.plugins.gamedata.Transport.isRequiredItem(id)
+                        : id -> keep.test(id) || net.runelite.client.plugins.gamedata.Transport.isRequiredItem(id);
                 this.needs = needs == null ? Collections.emptyList() : new ArrayList<>(needs);
                 WorldPoint here = local.getWorldLocation();
                 if (here == null)

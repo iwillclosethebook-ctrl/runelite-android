@@ -630,6 +630,38 @@ public class AutoFightPlugin extends Plugin
                 }
         }
 
+        /**
+         * An NPC of the kind we fight that is attacking us while we are not actually trading
+         * hits with our own target yet (still walking to it, or it is busy with someone else).
+         * Null when there is none, or when we are already fighting it.
+         */
+        private NPC retaliationTarget(Player local)
+        {
+                Actor ours = local.getInteracting();
+                if (ours instanceof NPC && ((NPC) ours).getInteracting() == local && !npcUtil.isDying((NPC) ours))
+                {
+                        return null; // already in a real fight
+                }
+                WorldPoint here = local.getWorldLocation();
+                NPC best = null;
+                int bestD = Integer.MAX_VALUE;
+                for (NPC npc : matching)
+                {
+                        if (npc == ours || npc.getInteracting() != local || npcUtil.isDying(npc))
+                        {
+                                continue;
+                        }
+                        WorldPoint w = npc.getWorldLocation();
+                        int d = here == null || w == null ? 99 : Math.max(Math.abs(w.getX() - here.getX()), Math.abs(w.getY() - here.getY()));
+                        if (d < bestD && d <= 12)
+                        {
+                                bestD = d;
+                                best = npc;
+                        }
+                }
+                return best;
+        }
+
         private boolean isValidNext(NPC npc, Player local)
         {
                 if (npc == null || npc == currentTarget || !matching.contains(npc) || npcUtil.isDying(npc))
@@ -758,6 +790,25 @@ public class AutoFightPlugin extends Plugin
                 if (config.autoEat() && tickEating(local))
                 {
                         return;
+                }
+
+                // Something we fight started hitting us while we were still running to another
+                // target: hit back right away instead of chasing the other one (no reaction wait).
+                if (config.autoAttack() && !bankSession.isActive() && !returning && !looting && !input.isBusy())
+                {
+                        NPC attacker = retaliationTarget(local);
+                        if (attacker != null && attacker != pendingTarget
+                                && input.interact(npcTarget(attacker), "Attack", GameHelpers.npcDefaultAction(attacker, "Attack"), true, false))
+                        {
+                                input.log("attacked by " + attacker.getName() + "#" + attacker.getIndex() + " on the way: fighting it instead");
+                                pendingTarget = attacker;
+                                lastVictim = attacker;
+                                pendingTicks = 0;
+                                pendingAttempts = 1;
+                                nextTarget = null;
+                                waitTicks = 1;
+                                return;
+                        }
                 }
 
                 if (waitTicks > 0)

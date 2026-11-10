@@ -126,16 +126,20 @@ class ScriptsPanel extends PluginPanel
                 JLabel blurb = new JLabel("Everything, for troubleshooting");
                 blurb.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
                 JPanel text = new JPanel(new GridLayout(3, 1));
+                logState.setVerticalAlignment(JLabel.TOP);
                 text.setOpaque(false);
                 text.add(name);
                 text.add(blurb);
                 text.add(logState);
 
                 JButton share = new JButton("Share");
+                JButton save = new JButton("Save");
+                save.setToolTipText("Save a zip to Download/RuneLite on the phone");
                 JButton clear = new JButton("Clear");
-                JPanel buttons = new JPanel(new GridLayout(3, 1, 0, 3));
+                JPanel buttons = new JPanel(new GridLayout(4, 1, 0, 3));
                 buttons.setOpaque(false);
-                for (JButton b : new JButton[] {logPower, share, clear})
+                save.addActionListener(e -> SessionLog.INSTANCE.saveToDownloads());
+                for (JButton b : new JButton[] {logPower, share, save, clear})
                 {
                         b.setPreferredSize(new Dimension(64, 24));
                         buttons.add(b);
@@ -275,7 +279,9 @@ class ScriptsPanel extends PluginPanel
         {
                 boolean logOn = !"false".equals(configManager.getConfiguration("humanizer", "sessionLog"));
                 logPower.setText(logOn ? "Off" : "On");
-                logState.setText((logOn ? "Recording · " : "Off · ") + SessionLog.INSTANCE.summary());
+                String saved = SessionLog.INSTANCE.savedTo();
+                logState.setText("<html>" + (logOn ? "Recording · " : "Off · ") + SessionLog.INSTANCE.summary()
+                        + (saved == null ? "" : "<br>Saved: " + saved) + "</html>");
                 logState.setForeground(logOn ? new Color(0x6CCB5F) : ColorScheme.LIGHT_GRAY_COLOR);
                 for (Row row : rows)
                 {

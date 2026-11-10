@@ -511,7 +511,7 @@ public final class HumanInput
         private static final List<Persona> PERSONAS = Collections.unmodifiableList(Arrays.asList(
                 new Persona("Swift tapper", Placement.GAUSSIAN_CENTER, 45, 95, 0, 10, 6, 40, 220, 55, 12),
                 new Persona("Cautious menuer", Placement.TIGHT_BOX, 90, 160, 70, 40, 9, 150, 500, 40, 6),
-                new Persona("Wandering hover", Placement.UNIFORM_HULL, 60, 130, 15, 70, 14, 90, 380, 80, 9),
+                new Persona("Wandering hover", Placement.GAUSSIAN_CENTER, 60, 130, 15, 70, 14, 90, 380, 80, 9),
                 new Persona("Weary grinder", Placement.LOWER_BIAS, 110, 210, 30, 30, 12, 250, 700, 45, 15)
         ));
 
@@ -1881,6 +1881,7 @@ public final class HumanInput
                                 return;
                         }
                         final int gen = generation;
+                        final double tilePx = tilePixels();
                         hovering = true;
                         try
                         {
@@ -1903,8 +1904,9 @@ public final class HumanInput
                                                 double detune = 0.05d + random.nextDouble() * 0.14d;
                                                 double fy = base + (random.nextBoolean() ? detune : -detune);
 
-                                                double ax = 16.0d + random.nextDouble() * 46.0d;
-                                                double ay = 12.0d + random.nextDouble() * 38.0d;
+                                                // Small: about half a tile left/right, less up/down.
+                                                double ax = tilePx * (0.18d + random.nextDouble() * 0.32d);
+                                                double ay = tilePx * (0.10d + random.nextDouble() * 0.20d);
                                                 double phx = random.nextDouble() * 2.0d * Math.PI;
                                                 double phy = random.nextDouble() * 2.0d * Math.PI;
 
@@ -1939,6 +1941,34 @@ public final class HumanInput
                         catch (RuntimeException ignored)
                         {
                                 hovering = false;
+                        }
+                }
+
+                /** On-screen width of one tile near the player, in stretched px (client thread). */
+                private double tilePixels()
+                {
+                        try
+                        {
+                                Player local = client.getLocalPlayer();
+                                WorldView wv = client.getTopLevelWorldView();
+                                LocalPoint lp = local == null ? null : local.getLocalLocation();
+                                if (lp == null || wv == null)
+                                {
+                                        return 30.0d;
+                                }
+                                Point a = Perspective.localToCanvas(client, lp, wv.getPlane());
+                                Point b = Perspective.localToCanvas(client, new LocalPoint(lp.getX() + 128, lp.getY(), wv), wv.getPlane());
+                                if (a == null || b == null)
+                                {
+                                        return 30.0d;
+                                }
+                                double[] f = stretchFactors();
+                                double px = Math.hypot((b.getX() - a.getX()) * f[0], (b.getY() - a.getY()) * f[1]);
+                                return Math.max(12.0d, Math.min(90.0d, px));
+                        }
+                        catch (RuntimeException e)
+                        {
+                                return 30.0d;
                         }
                 }
 

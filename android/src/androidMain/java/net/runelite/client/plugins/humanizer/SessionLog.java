@@ -379,35 +379,9 @@ public final class SessionLog
                                 return;
                         }
                         String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date());
-                        File zip = new File(dir, "sessionlog-" + stamp + ".zip");
-                        File[] old = dir.listFiles((d, n) -> n.startsWith("sessionlog-") && n.endsWith(".zip"));
-                        if (old != null)
+                        File zip = buildZip(dir, stamp);
+                        if (zip == null)
                         {
-                                for (File f : old)
-                                {
-                                        f.delete();
-                                }
-                        }
-                        try (ZipOutputStream z = new ZipOutputStream(new FileOutputStream(zip)))
-                        {
-                                byte[] buf = new byte[1 << 16];
-                                for (File f : files())
-                                {
-                                        z.putNextEntry(new ZipEntry(f.getName()));
-                                        try (FileInputStream in = new FileInputStream(f))
-                                        {
-                                                int r;
-                                                while ((r = in.read(buf)) > 0)
-                                                {
-                                                        z.write(buf, 0, r);
-                                                }
-                                        }
-                                        z.closeEntry();
-                                }
-                        }
-                        catch (IOException e)
-                        {
-                                lastError = "zip failed: " + e.getMessage();
                                 return;
                         }
                         try
@@ -428,6 +402,125 @@ public final class SessionLog
                                 Log.e(TAG, "share failed", e);
                         }
                 }, "session-log-share").start();
+        }
+
+        private File buildZip(File dir, String stamp)
+        {
+                File zip = new File(dir, "sessionlog-" + stamp + ".zip");
+                File[] old = dir.listFiles((d, n) -> n.startsWith("sessionlog-") && n.endsWith(".zip"));
+                if (old != null)
+                {
+                        for (File f : old)
+                        {
+                                f.delete();
+                        }
+                }
+                try (ZipOutputStream z = new ZipOutputStream(new FileOutputStream(zip)))
+                {
+                        byte[] buf = new byte[1 << 16];
+                        for (File f : files())
+                        {
+                                z.putNextEntry(new ZipEntry(f.getName()));
+                                try (FileInputStream in = new FileInputStream(f))
+                                {
+                                        int r;
+                                        while ((r = in.read(buf)) > 0)
+                                        {
+                                                z.write(buf, 0, r);
+                                        }
+                                }
+                                z.closeEntry();
+                        }
+                        return zip;
+                }
+                catch (IOException e)
+                {
+                        lastError = "zip failed: " + e.getMessage();
+                        return null;
+                }
+        }
+
+        private volatile String savedTo;
+
+        /** Where the last "Save" put the zip, for the panel ("Download/RuneLite/..."). */
+        public String savedTo()
+        {
+                return savedTo;
+        }
+
+        /**
+         * Zips every session log into the phone's public Downloads folder, under
+         * Download/RuneLite/, where any file manager can open it. Any thread.
+         */
+        public void saveToDownloads()
+        {
+                line("GAME", "saving the session log to Downloads");
+                flush();
+                new Thread(() ->
+                {
+                        Context ctx = context();
+                        File dir = dir();
+                        if (ctx == null || dir == null)
+                        {
+                                lastError = "no app context";
+                                return;
+                        }
+                        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.ROOT).format(new Date());
+                        File zip = buildZip(dir, stamp);
+                        if (zip == null)
+                        {
+                                return;
+                        }
+                        String name = zip.getName();
+                        try
+                        {
+                                if (android.os.Build.VERSION.SDK_INT >= 29)
+                                {
+                                        android.content.ContentValues v = new android.content.ContentValues();
+                                        v.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+                                        v.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "application/zip");
+                                        v.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/RuneLite");
+                                        Uri uri = ctx.getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                                        if (uri == null)
+                                        {
+                                                lastError = "could not create the file in Downloads";
+                                                return;
+                                        }
+                                        try (java.io.OutputStream os = ctx.getContentResolver().openOutputStream(uri);
+                                             FileInputStream in = new FileInputStream(zip))
+                                        {
+                                                byte[] buf = new byte[1 << 16];
+                                                int r;
+                                                while ((r = in.read(buf)) > 0)
+                                                {
+                                                        os.write(buf, 0, r);
+                                                }
+                                        }
+                                        savedTo = "Download/RuneLite/" + name;
+                                }
+                                else
+                                {
+                                        File ext = ctx.getExternalFilesDir(null);
+                                        File out = new File(ext, name);
+                                        try (FileInputStream in = new FileInputStream(zip); FileOutputStream os = new FileOutputStream(out))
+                                        {
+                                                byte[] buf = new byte[1 << 16];
+                                                int r;
+                                                while ((r = in.read(buf)) > 0)
+                                                {
+                                                        os.write(buf, 0, r);
+                                                }
+                                        }
+                                        savedTo = out.getAbsolutePath();
+                                }
+                                lastError = null;
+                                line("GAME", "session log saved to " + savedTo);
+                        }
+                        catch (IOException | RuntimeException e)
+                        {
+                                lastError = "save failed: " + e.getMessage();
+                        }
+                }, "session-log-save").start();
         }
 
         /** Deletes every session log file (and starts a fresh one on the next line). */

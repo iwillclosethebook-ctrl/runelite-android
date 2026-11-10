@@ -23,10 +23,8 @@ public interface AutoWoodcutConfig extends Config
         @ConfigSection(name = "Full inventory", description = "What to do when the inventory fills up", position = 1)
         String fullSection = "full";
 
-        @ConfigSection(name = "Style", description = "How trees are drawn", position = 2)
         String styleSection = "style";
 
-        @ConfigSection(name = "Colors", description = "Tree highlight colors", position = 3)
         String colorsSection = "colors";
 
         @ConfigSection(name = "Tracking & alerts", description = "Log counter and notifications", position = 4)
@@ -145,51 +143,51 @@ public interface AutoWoodcutConfig extends Config
 
         // ---- Style ----
 
-        @ConfigItem(keyName = "hull", name = "Hull", description = "Highlight the tree's clickbox hull", section = styleSection, position = 0)
+        @ConfigItem(hidden = true, keyName = "hull", name = "Hull", description = "Highlight the tree's clickbox hull", section = styleSection, position = 0)
         default boolean hull()
         {
                 return true;
         }
 
-        @ConfigItem(keyName = "tile", name = "Tile", description = "Highlight the tile under the tree", section = styleSection, position = 1)
+        @ConfigItem(hidden = true, keyName = "tile", name = "Tile", description = "Highlight the tile under the tree", section = styleSection, position = 1)
         default boolean tile()
         {
                 return true;
         }
 
-        @ConfigItem(keyName = "trueTile", name = "True tile", description = "Highlight the tree's tile", section = styleSection, position = 2)
+        @ConfigItem(hidden = true, keyName = "trueTile", name = "True tile", description = "Highlight the tree's tile", section = styleSection, position = 2)
         default boolean trueTile()
         {
                 return false;
         }
 
-        @ConfigItem(keyName = "outline", name = "Outline", description = "Draw a model outline (heavier on phones)", section = styleSection, position = 3)
+        @ConfigItem(hidden = true, keyName = "outline", name = "Outline", description = "Draw a model outline (heavier on phones)", section = styleSection, position = 3)
         default boolean outline()
         {
                 return false;
         }
 
-        @ConfigItem(keyName = "name", name = "Name", description = "Draw the tree's name above it", section = styleSection, position = 4)
+        @ConfigItem(hidden = true, keyName = "name", name = "Name", description = "Draw the tree's name above it", section = styleSection, position = 4)
         default boolean name()
         {
                 return true;
         }
 
-        @ConfigItem(keyName = "minimap", name = "Minimap name", description = "Draw names on the minimap", section = styleSection, position = 5)
+        @ConfigItem(hidden = true, keyName = "minimap", name = "Minimap name", description = "Draw names on the minimap", section = styleSection, position = 5)
         default boolean minimap()
         {
                 return false;
         }
 
         @Range(min = 1, max = 10)
-        @ConfigItem(keyName = "borderWidth", name = "Border width", description = "Highlight line thickness", section = styleSection, position = 6)
+        @ConfigItem(hidden = true, keyName = "borderWidth", name = "Border width", description = "Highlight line thickness", section = styleSection, position = 6)
         default int borderWidth()
         {
                 return 2;
         }
 
         @Range(max = 4)
-        @ConfigItem(keyName = "outlineFeather", name = "Outline feather", description = "Outline softness (0-4)", section = styleSection, position = 7)
+        @ConfigItem(hidden = true, keyName = "outlineFeather", name = "Outline feather", description = "Outline softness (0-4)", section = styleSection, position = 7)
         default int outlineFeather()
         {
                 return 0;
@@ -198,34 +196,34 @@ public interface AutoWoodcutConfig extends Config
         // ---- Colors ----
 
         @Alpha
-        @ConfigItem(keyName = "currentColor", name = "Current tree", description = "Tree you are chopping", section = colorsSection, position = 0)
+        @ConfigItem(hidden = true, keyName = "currentColor", name = "Current tree", description = "Tree you are chopping", section = colorsSection, position = 0)
         default Color currentColor()
         {
                 return new Color(255, 40, 40);
         }
 
-        @ConfigItem(keyName = "highlightNext", name = "Mark next tree", description = "Use a separate color for the next tree to be clicked", section = colorsSection, position = 1)
+        @ConfigItem(hidden = true, keyName = "highlightNext", name = "Mark next tree", description = "Use a separate color for the next tree to be clicked", section = colorsSection, position = 1)
         default boolean highlightNext()
         {
                 return true;
         }
 
         @Alpha
-        @ConfigItem(keyName = "nextColor", name = "Next tree", description = "Tree that will be clicked next", section = colorsSection, position = 2)
+        @ConfigItem(hidden = true, keyName = "nextColor", name = "Next tree", description = "Tree that will be clicked next", section = colorsSection, position = 2)
         default Color nextColor()
         {
                 return new Color(255, 220, 0);
         }
 
         @Alpha
-        @ConfigItem(keyName = "otherColor", name = "Other trees", description = "All other matching trees", section = colorsSection, position = 3)
+        @ConfigItem(hidden = true, keyName = "otherColor", name = "Other trees", description = "All other matching trees", section = colorsSection, position = 3)
         default Color otherColor()
         {
                 return new Color(0, 255, 255);
         }
 
         @Alpha
-        @ConfigItem(keyName = "fillColor", name = "Fill", description = "Fill color inside the highlight", section = colorsSection, position = 4)
+        @ConfigItem(hidden = true, keyName = "fillColor", name = "Fill", description = "Fill color inside the highlight", section = colorsSection, position = 4)
         default Color fillColor()
         {
                 return new Color(0, 0, 0, 40);

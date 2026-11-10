@@ -24,10 +24,8 @@ public interface AutoFightConfig extends Config
         @ConfigSection(name = "Targets", description = "Which NPCs to highlight", position = 0)
         String targetsSection = "targets";
 
-        @ConfigSection(name = "Style", description = "How highlighted NPCs are drawn", position = 1)
         String styleSection = "style";
 
-        @ConfigSection(name = "Colors", description = "Highlight colors", position = 2)
         String colorsSection = "colors";
 
         @ConfigSection(name = "Tracking & alerts", description = "Kill counter and notifications", position = 3)
@@ -97,57 +95,57 @@ public interface AutoFightConfig extends Config
 
         // ---- Style ----
 
-        @ConfigItem(keyName = "hull", name = "Hull", description = "Highlight the NPC's clickbox hull", section = styleSection, position = 0)
+        @ConfigItem(hidden = true, keyName = "hull", name = "Hull", description = "Highlight the NPC's clickbox hull", section = styleSection, position = 0)
         default boolean hull()
         {
                 return true;
         }
 
-        @ConfigItem(keyName = "tile", name = "Tile", description = "Highlight the tile under the NPC", section = styleSection, position = 1)
+        @ConfigItem(hidden = true, keyName = "tile", name = "Tile", description = "Highlight the tile under the NPC", section = styleSection, position = 1)
         default boolean tile()
         {
                 return false;
         }
 
-        @ConfigItem(keyName = "trueTile", name = "True tile", description = "Highlight the NPC's server-side tile", section = styleSection, position = 2)
+        @ConfigItem(hidden = true, keyName = "trueTile", name = "True tile", description = "Highlight the NPC's server-side tile", section = styleSection, position = 2)
         default boolean trueTile()
         {
                 return false;
         }
 
-        @ConfigItem(keyName = "outline", name = "Outline", description = "Draw a model outline (heavier on phones)", section = styleSection, position = 3)
+        @ConfigItem(hidden = true, keyName = "outline", name = "Outline", description = "Draw a model outline (heavier on phones)", section = styleSection, position = 3)
         default boolean outline()
         {
                 return false;
         }
 
-        @ConfigItem(keyName = "name", name = "Name", description = "Draw the NPC's name above it", section = styleSection, position = 4)
+        @ConfigItem(hidden = true, keyName = "name", name = "Name", description = "Draw the NPC's name above it", section = styleSection, position = 4)
         default boolean name()
         {
                 return true;
         }
 
-        @ConfigItem(keyName = "minimap", name = "Minimap name", description = "Draw names on the minimap", section = styleSection, position = 5)
+        @ConfigItem(hidden = true, keyName = "minimap", name = "Minimap name", description = "Draw names on the minimap", section = styleSection, position = 5)
         default boolean minimap()
         {
                 return false;
         }
 
         @Range(min = 1, max = 10)
-        @ConfigItem(keyName = "borderWidth", name = "Border width", description = "Highlight line thickness", section = styleSection, position = 6)
+        @ConfigItem(hidden = true, keyName = "borderWidth", name = "Border width", description = "Highlight line thickness", section = styleSection, position = 6)
         default int borderWidth()
         {
                 return 2;
         }
 
         @Range(max = 4)
-        @ConfigItem(keyName = "outlineFeather", name = "Outline feather", description = "Outline softness (0-4)", section = styleSection, position = 7)
+        @ConfigItem(hidden = true, keyName = "outlineFeather", name = "Outline feather", description = "Outline softness (0-4)", section = styleSection, position = 7)
         default int outlineFeather()
         {
                 return 0;
         }
 
-        @ConfigItem(keyName = "hideDead", name = "Hide dying NPCs", description = "Stop highlighting NPCs that are dying", section = styleSection, position = 8)
+        @ConfigItem(hidden = true, keyName = "hideDead", name = "Hide dying NPCs", description = "Stop highlighting NPCs that are dying", section = styleSection, position = 8)
         default boolean hideDead()
         {
                 return true;
@@ -156,34 +154,34 @@ public interface AutoFightConfig extends Config
         // ---- Colors ----
 
         @Alpha
-        @ConfigItem(keyName = "targetColor", name = "Current target", description = "NPC you're fighting", section = colorsSection, position = 0)
+        @ConfigItem(hidden = true, keyName = "targetColor", name = "Current target", description = "NPC you're fighting", section = colorsSection, position = 0)
         default Color targetColor()
         {
                 return new Color(255, 40, 40);
         }
 
-        @ConfigItem(keyName = "highlightNext", name = "Mark next target", description = "Use a separate color for the nearest free NPC", section = colorsSection, position = 1)
+        @ConfigItem(hidden = true, keyName = "highlightNext", name = "Mark next target", description = "Use a separate color for the nearest free NPC", section = colorsSection, position = 1)
         default boolean highlightNext()
         {
                 return true;
         }
 
         @Alpha
-        @ConfigItem(keyName = "nextColor", name = "Next target", description = "Nearest free matching NPC", section = colorsSection, position = 2)
+        @ConfigItem(hidden = true, keyName = "nextColor", name = "Next target", description = "Nearest free matching NPC", section = colorsSection, position = 2)
         default Color nextColor()
         {
                 return new Color(255, 220, 0);
         }
 
         @Alpha
-        @ConfigItem(keyName = "otherColor", name = "Other matches", description = "All other matching NPCs", section = colorsSection, position = 3)
+        @ConfigItem(hidden = true, keyName = "otherColor", name = "Other matches", description = "All other matching NPCs", section = colorsSection, position = 3)
         default Color otherColor()
         {
                 return new Color(0, 255, 255);
         }
 
         @Alpha
-        @ConfigItem(keyName = "fillColor", name = "Fill", description = "Fill color inside the highlight", section = colorsSection, position = 4)
+        @ConfigItem(hidden = true, keyName = "fillColor", name = "Fill", description = "Fill color inside the highlight", section = colorsSection, position = 4)
         default Color fillColor()
         {
                 return new Color(0, 0, 0, 40);

@@ -74,6 +74,20 @@ public final class Transport
         final Quest[] quests;
         final int[][] varbits; // {id, op, value}; op: 0 '=', 1 '>', 2 '<', 3 '&'
         final int[][] varps;
+        /** Item requirement: any one of these ids (inventory or worn), {id, qty} pairs; empty = none. */
+        int[][] items = new int[0][];
+
+        private static final java.util.Set<Integer> REQUIRED_ITEMS = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+        /**
+         * Item ids some transport needs (keys like the brass key, axes for vines, ...).
+         * Bank trips never deposit these, or the way back would be locked.
+         */
+        public static boolean isRequiredItem(int itemId)
+        {
+                all();
+                return REQUIRED_ITEMS.contains(itemId);
+        }
 
         private Transport(int[] o, int[] d, String option, String target, int objectId, int duration, boolean members,
                 Skill[] skills, int[] levels, Quest[] quests, int[][] varbits, int[][] varps)
@@ -216,10 +230,23 @@ public final class Transport
                         return null;
                 }
                 int objectId = Integer.parseInt(menu[2].trim());
-                // Item and coin costs are not handled.
-                if (!col(c, 4).isEmpty() || !col(c, 5).isEmpty())
+                // Coin costs are not handled.
+                if (!col(c, 5).isEmpty())
                 {
                         return null;
+                }
+                // Item requirement: a list of alternatives ("1351 1349 ..." or "1351;1349"),
+                // each optionally "id=qty". Holding (or wearing) any one is enough.
+                List<int[]> itemReq = new ArrayList<>();
+                for (String part : col(c, 4).split("[;\\s]+"))
+                {
+                        String it = part.trim();
+                        if (it.isEmpty())
+                        {
+                                continue;
+                        }
+                        String[] iq = it.split("=");
+                        itemReq.add(new int[] {Integer.parseInt(iq[0].trim()), iq.length > 1 ? Integer.parseInt(iq[1].trim()) : 1});
                 }
 
                 List<Skill> skills = new ArrayList<>();
@@ -285,8 +312,16 @@ public final class Transport
                 {
                         lv[i] = levels.get(i);
                 }
-                return new Transport(o, d, menu[0].trim(), menu[1].trim(), objectId, duration, members,
+                Transport t = new Transport(o, d, menu[0].trim(), menu[1].trim(), objectId, duration, members,
                         skills.toArray(new Skill[0]), lv, quests.toArray(new Quest[0]), varbits, varps);
+                t.items = itemReq.toArray(new int[0][]);
+                // Only one-item keys (doors, gates) are protected from deposits: tool lists
+                // like "any axe" are left to the player's own keep list.
+                if (itemReq.size() == 1)
+                {
+                        REQUIRED_ITEMS.add(itemReq.get(0)[0]);
+                }
+                return t;
         }
 
         /** "6027>6;5088=1" -> {{6027,1,6},{5088,0,1}}; null when an operator is not understood. */
@@ -385,7 +420,38 @@ public final class Transport
                                 return false;
                         }
                 }
-                return true;
+                return items.length == 0 || hasAnyItem(client, items);
+        }
+
+        private static boolean hasAnyItem(Client client, int[][] items)
+        {
+                for (int[] it : items)
+                {
+                        if (count(client, net.runelite.api.gameval.InventoryID.INV, it[0])
+                                + count(client, net.runelite.api.gameval.InventoryID.WORN, it[0]) >= it[1])
+                        {
+                                return true;
+                        }
+                }
+                return false;
+        }
+
+        private static int count(Client client, int containerId, int itemId)
+        {
+                net.runelite.api.ItemContainer c = client.getItemContainer(containerId);
+                if (c == null)
+                {
+                        return 0;
+                }
+                int n = 0;
+                for (net.runelite.api.Item i : c.getItems())
+                {
+                        if (i != null && i.getId() == itemId)
+                        {
+                                n += Math.max(1, i.getQuantity());
+                        }
+                }
+                return n;
         }
 
         private static boolean check(int actual, int op, int value)

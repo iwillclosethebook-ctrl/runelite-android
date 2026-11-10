@@ -297,6 +297,6 @@ public interface HumanizerConfig extends Config
         @ConfigItem(keyName = "logInput", name = "Log input simulation", description = "Write each gesture, camera turn and walk step to logcat (tags AutoFish, AutoFight, ...)", section = debugSection, position = 0)
         default boolean logInput()
         {
-                return false;
+                return true;
         }
 }
