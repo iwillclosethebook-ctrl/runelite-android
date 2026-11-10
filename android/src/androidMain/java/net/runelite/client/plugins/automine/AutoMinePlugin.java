@@ -166,6 +166,7 @@ public class AutoMinePlugin extends Plugin
         @Override
         protected void startUp()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoMine", this::getStatus);
                 input = new HumanInput(client, clientThread, configManager.getConfig(HumanizerConfig.class), LOG_TAG);
                 walker = new WebWalker(client, input, LOG_TAG);
                 bankSession = new BankSession(client, itemManager, input, walker);
@@ -188,6 +189,7 @@ public class AutoMinePlugin extends Plugin
         @Override
         protected void shutDown()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoMine", null);
                 input.stop();
                 overlayManager.remove(overlay);
                 overlayManager.remove(rockOverlay);
@@ -1047,13 +1049,23 @@ public class AutoMinePlugin extends Plugin
                         return;
                 }
                 LocalPoint lp = LocalPoint.fromScene(entry.getParam0(), entry.getParam1(), wv);
+                // The menu entry carries the rock's exact scene tile (its south-west corner):
+                // pick that rock, not a neighbouring one of the same type.
                 GameObject rock = null;
-                for (GameObject obj : GameHelpers.gameObjectsAround(client, lp, 1))
+                int bestD = Integer.MAX_VALUE;
+                for (GameObject obj : GameHelpers.gameObjectsAround(client, lp, 2))
                 {
-                        if (obj.getId() == entry.getIdentifier())
+                        if (obj.getId() != entry.getIdentifier())
                         {
+                                continue;
+                        }
+                        net.runelite.api.Point min = obj.getSceneMinLocation();
+                        int d = min == null ? 99
+                                : Math.abs(min.getX() - entry.getParam0()) + Math.abs(min.getY() - entry.getParam1());
+                        if (d < bestD)
+                        {
+                                bestD = d;
                                 rock = obj;
-                                break;
                         }
                 }
                 if (rock == null)

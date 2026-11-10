@@ -295,6 +295,7 @@ public class AutoFightPlugin extends Plugin
         @Override
         protected void startUp()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoFight", this::getStatus);
                 parseIds();
                 parseLoot();
                 parseCenter();
@@ -318,6 +319,7 @@ public class AutoFightPlugin extends Plugin
         @Override
         protected void shutDown()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoFight", null);
                 input.stop();
                 npcOverlayService.unregisterHighlighter(highlighter);
                 overlayManager.remove(overlay);

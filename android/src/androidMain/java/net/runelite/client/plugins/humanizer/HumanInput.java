@@ -191,6 +191,17 @@ public final class HumanInput
 
         public void log(String message)
         {
+                SessionLog.INSTANCE.line("LOG", message);
+                if (config.logInput())
+                {
+                        Log.i(LOG_TAG, message);
+                }
+        }
+
+        /** Engine trace: always to the session log, to logcat when "Log input" is on. */
+        private void trace(String message)
+        {
+                SessionLog.INSTANCE.line("INPUT", message);
                 if (config.logInput())
                 {
                         Log.i(LOG_TAG, message);
@@ -515,10 +526,7 @@ public final class HumanInput
                 persona = next;
                 personaChangedAt = System.currentTimeMillis();
                 scheduleNextPersonaSwitch();
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "input style -> " + next.label);
-                }
+                trace("input style -> " + next.label);
         }
 
         public String getPersonaLabel()
@@ -1063,11 +1071,8 @@ public final class HumanInput
                         t.key = (reverse ? -sweep : sweep) + amp * wave + cross * 0.001d;
                 }
                 plan.sort((a, b) -> Double.compare(a.key, b.key));
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, String.format(Locale.ROOT, "drop wave: k=%d amp=%.2f phase=%.2f %s%s",
+                trace(String.format(Locale.ROOT, "drop wave: k=%d amp=%.2f phase=%.2f %s%s",
                                 k, amp, phase, byColumns ? "columns" : "rows", reverse ? " reversed" : ""));
-                }
         }
 
         // ---------------------------------------------------------------- touch engine
@@ -1258,11 +1263,8 @@ public final class HumanInput
                         final int padMs = pad;
 
                         busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, (menu ? "menu-walk" : "tap") + " '" + action + "' at " + pt[0] + "," + pt[1]
+                        trace((menu ? "menu-walk" : "tap") + " '" + action + "' at " + pt[0] + "," + pt[1]
                                         + " pad=" + padMs + "ms" + (ground != null ? " misclick-armed" : ""));
-                        }
                         try
                         {
                                 timeline.execute(() -> runInteract(gen, victim, style, menu, action, point, groundPoint, dismissPoint, padMs));
@@ -1326,10 +1328,7 @@ public final class HumanInput
                                                 parkedPoint = pt;
                                                 parkedTarget = target;
                                                 parkedGen = gen;
-                                                if (config.logInput())
-                                                {
-                                                        Log.i(LOG_TAG, "parked on next target at " + pt[0] + "," + pt[1]);
-                                                }
+                                                trace("parked on next target at " + pt[0] + "," + pt[1]);
                                         }
                                         finally
                                         {
@@ -1363,10 +1362,7 @@ public final class HumanInput
                         final int[] dismissPoint = dismiss;
                         final int padMs = Math.max(30, personaPad(style) / 2);
                         busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "tap '" + label + "' at " + pt[0] + "," + pt[1]);
-                        }
+                        trace("tap '" + label + "' at " + pt[0] + "," + pt[1]);
                         try
                         {
                                 timeline.execute(() -> runTap(gen, style, point, dismissPoint, padMs));
@@ -1397,10 +1393,7 @@ public final class HumanInput
                         final int[] dismissPoint = dismiss;
                         final int padMs = Math.max(40, personaPad(style) / 2);
                         busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "long-press '" + option + "' at " + pt[0] + "," + pt[1]);
-                        }
+                        trace("long-press '" + option + "' at " + pt[0] + "," + pt[1]);
                         try
                         {
                                 timeline.execute(() ->
@@ -1470,10 +1463,7 @@ public final class HumanInput
                         final int padMs = personaPad(p);
 
                         busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "drop gesture: " + batch.size() + " items pad=" + padMs + "ms");
-                        }
+                        trace("drop gesture: " + batch.size() + " items pad=" + padMs + "ms");
                         try
                         {
                                 timeline.execute(() -> runDrops(gen, style, batch, dismissPoint, padMs));
@@ -1515,10 +1505,7 @@ public final class HumanInput
                         final int[] dismissPoint = dismiss;
 
                         busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "shift-drop pass: " + batch.size() + " items");
-                        }
+                        trace("shift-drop pass: " + batch.size() + " items");
                         try
                         {
                                 timeline.execute(() -> runShiftDrops(gen, style, batch, dismissPoint));
@@ -1619,10 +1606,7 @@ public final class HumanInput
                         }
                         final int gen = ++generation;
                         busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "key '" + label + "' (vk " + vk + ")");
-                        }
+                        trace("key '" + label + "' (vk " + vk + ")");
                         try
                         {
                                 timeline.execute(() ->
@@ -1666,10 +1650,7 @@ public final class HumanInput
                         }
                         final int gen = ++generation;
                         busy = true;
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "hover '" + label + "' at " + pt[0] + "," + pt[1] + " for " + dwellMs + "ms");
-                        }
+                        trace("hover '" + label + "' at " + pt[0] + "," + pt[1] + " for " + dwellMs + "ms");
                         try
                         {
                                 timeline.execute(() ->
@@ -1738,6 +1719,10 @@ public final class HumanInput
                 /** Character key, with a real Shift press around capitals and shifted symbols. */
                 private boolean strokeChar(int gen, char c, KeyRhythm hold, int index)
                 {
+                        if (Character.isUpperCase(c))
+                        {
+                                SessionLog.INSTANCE.line("INPUT", "key Shift (held for '" + c + "')");
+                        }
                         boolean shifted = Character.isUpperCase(c) || "~!@#$%^&*()_+{}|:\"<>?".indexOf(c) >= 0;
                         int vk = java.awt.event.KeyEvent.getExtendedKeyCodeForChar(c);
                         if (vk == java.awt.event.KeyEvent.VK_UNDEFINED)
@@ -1771,6 +1756,7 @@ public final class HumanInput
                 /** Key-down, hold for the rhythm's next hold time, key-up. Always releases. */
                 private boolean strokeKey(int gen, int vk, char c, KeyRhythm hold, int index)
                 {
+                        SessionLog.INSTANCE.line("INPUT", "key " + java.awt.event.KeyEvent.getKeyText(vk) + (c >= 32 && c < 127 ? " '" + c + "'" : ""));
                         if (!post(() -> KeyDispatch.INSTANCE.keyDown(vk, c, 0)))
                         {
                                 return false;
@@ -2028,10 +2014,7 @@ public final class HumanInput
                                         emitBurst(gen, fix[0], fix[1], MouseEvent.BUTTON1);
                                         lastX = fix[0];
                                         lastY = fix[1];
-                                        if (config.logInput())
-                                        {
-                                                Log.i(LOG_TAG, "misclick corrected after ~" + gap + "ms");
-                                        }
+                                        trace("misclick corrected after ~" + gap + "ms");
                                 }
                         }
                         finally
@@ -2143,10 +2126,7 @@ public final class HumanInput
                                         }
                                         int[] aim = {target.x, target.y};
                                         emitBurst(gen, aim[0], aim[1], MouseEvent.BUTTON1);
-                                        if (config.logInput())
-                                        {
-                                                Log.i(LOG_TAG, "shift-drop: slot " + target.slot + " " + target.label);
-                                        }
+                                        trace("shift-drop: slot " + target.slot + " " + target.label);
 
                                         int gap = (int) Math.round(base + swing * (target.wave + 1d) / 2d) + random.nextInt(25);
                                         if (random.nextInt(100) < 4)
@@ -2180,6 +2160,7 @@ public final class HumanInput
                  */
                 private boolean setShift(boolean down)
                 {
+                        SessionLog.INSTANCE.line("INPUT", "shift " + (down ? "down" : "up"));
                         CountDownLatch done = new CountDownLatch(1);
                         boolean[] changed = {false};
                         new Handler(Looper.getMainLooper()).post(() ->
@@ -2332,10 +2313,7 @@ public final class HumanInput
                                         emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
                                         lastX = row[0];
                                         lastY = row[1];
-                                        if (config.logInput())
-                                        {
-                                                Log.i(LOG_TAG, "drop: clicked the Drop row for " + target.label);
-                                        }
+                                        trace("drop: clicked the Drop row for " + target.label);
 
                                         // Let the menu close and the item vanish before the next long-press.
                                         if (!sleep(140 + random.nextInt(260)))
@@ -2440,10 +2418,7 @@ public final class HumanInput
                         emitBurst(gen, row[0], row[1], MouseEvent.BUTTON1);
                         lastX = row[0];
                         lastY = row[1];
-                        if (config.logInput())
-                        {
-                                Log.i(LOG_TAG, "menu-walk: clicked the '" + wanted + "' row at " + row[0] + "," + row[1]);
-                        }
+                        trace("menu-walk: clicked the '" + wanted + "' row at " + row[0] + "," + row[1]);
                 }
 
                 /** Taps away an open context menu before doing anything else. */
@@ -2684,10 +2659,7 @@ public final class HumanInput
                                 {
                                         return aim;
                                 }
-                                if (config.logInput())
-                                {
-                                        Log.i(LOG_TAG, "aim check: tap would not '" + wanted + "' the target, re-aiming");
-                                }
+                                trace("aim check: tap would not '" + wanted + "' the target, re-aiming");
                         }
                         return null;
                 }
@@ -2740,10 +2712,7 @@ public final class HumanInput
                                 {
                                         return aim;
                                 }
-                                if (config.logInput())
-                                {
-                                        Log.i(LOG_TAG, "slot aim: tap would not '" + wanted + "' slot " + target.slot + ", re-aiming");
-                                }
+                                trace("slot aim: tap would not '" + wanted + "' slot " + target.slot + ", re-aiming");
                         }
                         return null;
                 }
@@ -2897,6 +2866,7 @@ public final class HumanInput
                         }
                         lastX = x;
                         lastY = y;
+                        SessionLog.INSTANCE.move(x, y);
                         Handler h = main;
                         if (h != null)
                         {
@@ -2918,6 +2888,7 @@ public final class HumanInput
                         }
                         lastX = x;
                         lastY = y;
+                        SessionLog.INSTANCE.line("INPUT", (button == MouseEvent.BUTTON3 ? "long-press/right" : "tap") + " at " + x + "," + y);
                         Handler h = main;
                         if (h != null)
                         {
@@ -3329,10 +3300,7 @@ public final class HumanInput
                 }
                 lastRescueMs = now;
                 planYawTurn(lp, true);
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "camera rescue turn toward off-screen spot");
-                }
+                trace("camera rescue turn toward off-screen spot");
         }
 
         /**
@@ -3431,11 +3399,8 @@ public final class HumanInput
                         planPitchTurn(duration);
                 }
 
-                if (config.logInput())
-                {
-                        Log.i(LOG_TAG, "camera turn: delta=" + delta + " dur=" + duration + "ms legs=" + legs.size()
+                trace("camera turn: delta=" + delta + " dur=" + duration + "ms legs=" + legs.size()
                                 + (rescue ? " (rescue)" : ""));
-                }
         }
 
         /** A small pitch drift alongside a yaw turn, starting slightly late. */

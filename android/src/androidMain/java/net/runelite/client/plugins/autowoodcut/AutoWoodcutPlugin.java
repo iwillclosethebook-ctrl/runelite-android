@@ -162,6 +162,7 @@ public class AutoWoodcutPlugin extends Plugin
         @Override
         protected void startUp()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoWoodcut", this::getStatus);
                 input = new HumanInput(client, clientThread, configManager.getConfig(HumanizerConfig.class), LOG_TAG);
                 walker = new WebWalker(client, input, LOG_TAG);
                 bankSession = new BankSession(client, itemManager, input, walker);
@@ -183,6 +184,7 @@ public class AutoWoodcutPlugin extends Plugin
         @Override
         protected void shutDown()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoWoodcut", null);
                 input.stop();
                 overlayManager.remove(overlay);
                 overlayManager.remove(treeOverlay);

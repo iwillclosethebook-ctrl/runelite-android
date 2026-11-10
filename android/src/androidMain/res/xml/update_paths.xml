@@ -3,4 +3,6 @@
     <cache-path name="updates" path="updates/" />
     <!-- Dev Tools recorder output, shared through the share sheet. -->
     <cache-path name="recordings" path="recordings/" />
+    <!-- Always-on session log zips (Scripts panel > Session log > Share). -->
+    <cache-path name="sessionlogs" path="sessionlogs/" />
 </paths>

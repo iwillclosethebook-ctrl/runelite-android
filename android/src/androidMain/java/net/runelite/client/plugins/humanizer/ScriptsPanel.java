@@ -93,6 +93,8 @@ class ScriptsPanel extends PluginPanel
                         add(buildRow(row));
                 }
 
+                add(buildLogRow());
+
                 JButton stopAll = new JButton("Stop all");
                 stopAll.addActionListener(e ->
                 {
@@ -107,6 +109,53 @@ class ScriptsPanel extends PluginPanel
                 refresh = new Timer(1000, e -> update());
                 refresh.start();
                 update();
+        }
+
+        private final JLabel logState = new JLabel();
+        private final JButton logPower = new JButton();
+
+        /** The always-on session log: on/off, size, Share (zip + share sheet), Clear. */
+        private JPanel buildLogRow()
+        {
+                JPanel panel = new JPanel(new BorderLayout(4, 2));
+                panel.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+                panel.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
+
+                JLabel name = new JLabel("Session log");
+                name.setForeground(Color.WHITE);
+                JLabel blurb = new JLabel("Everything, for troubleshooting");
+                blurb.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+                JPanel text = new JPanel(new GridLayout(3, 1));
+                text.setOpaque(false);
+                text.add(name);
+                text.add(blurb);
+                text.add(logState);
+
+                JButton share = new JButton("Share");
+                JButton clear = new JButton("Clear");
+                JPanel buttons = new JPanel(new GridLayout(3, 1, 0, 3));
+                buttons.setOpaque(false);
+                for (JButton b : new JButton[] {logPower, share, clear})
+                {
+                        b.setPreferredSize(new Dimension(64, 24));
+                        buttons.add(b);
+                }
+                logPower.addActionListener(e ->
+                {
+                        boolean on = !"false".equals(configManager.getConfiguration("humanizer", "sessionLog"));
+                        configManager.setConfiguration("humanizer", "sessionLog", !on);
+                        update();
+                });
+                share.addActionListener(e -> SessionLog.INSTANCE.share());
+                clear.addActionListener(e ->
+                {
+                        SessionLog.INSTANCE.clear();
+                        update();
+                });
+
+                panel.add(text, BorderLayout.CENTER);
+                panel.add(buttons, BorderLayout.EAST);
+                return panel;
         }
 
         private JPanel buildRow(Row row)
@@ -224,6 +273,10 @@ class ScriptsPanel extends PluginPanel
 
         private void update()
         {
+                boolean logOn = !"false".equals(configManager.getConfiguration("humanizer", "sessionLog"));
+                logPower.setText(logOn ? "Off" : "On");
+                logState.setText((logOn ? "Recording · " : "Off · ") + SessionLog.INSTANCE.summary());
+                logState.setForeground(logOn ? new Color(0x6CCB5F) : ColorScheme.LIGHT_GRAY_COLOR);
                 for (Row row : rows)
                 {
                         Plugin p = find(row.script);

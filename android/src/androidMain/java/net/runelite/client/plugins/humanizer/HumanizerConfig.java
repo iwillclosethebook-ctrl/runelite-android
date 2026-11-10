@@ -16,6 +16,9 @@ public interface HumanizerConfig extends Config
 {
         String GROUP = "humanizer";
 
+        @ConfigSection(name = "Session log", description = "Always-on log of everything that happens, to share for troubleshooting", position = -2)
+        String sessionSection = "session";
+
         @ConfigSection(name = "Banking", description = "The bank all scripts use", position = -1)
         String bankingSection = "banking";
 
@@ -209,6 +212,27 @@ public interface HumanizerConfig extends Config
         default int typeMaxMs()
         {
                 return 210;
+        }
+
+        // ---- Session log ----
+
+        @ConfigItem(keyName = "sessionLog", name = "Session log on", description = "Keep a running text log of everything: your taps and the scripts' (with finger paths and keys), menu clicks, chat, XP, inventory, interfaces, position, script status, errors. Share it from the Scripts panel.", section = sessionSection, position = 0)
+        default boolean sessionLog()
+        {
+                return true;
+        }
+
+        @ConfigItem(keyName = "sessionLogMoves", name = "Log finger paths", description = "Include every finger movement point of each gesture (bigger log)", section = sessionSection, position = 1)
+        default boolean sessionLogMoves()
+        {
+                return true;
+        }
+
+        @Range(min = 8, max = 500)
+        @ConfigItem(keyName = "sessionLogMaxMb", name = "Keep up to (MB)", description = "Oldest log files are deleted beyond this total", section = sessionSection, position = 2)
+        default int sessionLogMaxMb()
+        {
+                return 60;
         }
 
         // ---- Banking ----

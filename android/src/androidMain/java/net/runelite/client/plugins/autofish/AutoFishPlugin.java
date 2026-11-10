@@ -238,6 +238,7 @@ public class AutoFishPlugin extends Plugin
         @Override
         protected void startUp()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoFish", this::getStatus);
                 parseSpotIds();
                 parseActions();
                 parseDrop();
@@ -259,6 +260,7 @@ public class AutoFishPlugin extends Plugin
         @Override
         protected void shutDown()
         {
+                net.runelite.client.plugins.humanizer.SessionLog.INSTANCE.statusSource("AutoFish", null);
                 input.stop();
                 npcOverlayService.unregisterHighlighter(highlighter);
                 overlayManager.remove(overlay);
@@ -1235,5 +1237,23 @@ public class AutoFishPlugin extends Plugin
         void resetCounter()
         {
                 resetSession();
+        }
+
+        /** One-line status for the session log. */
+        String getStatus()
+        {
+                if (!config.autoFish())
+                {
+                        return "off";
+                }
+                if (dropping)
+                {
+                        return "dropping";
+                }
+                if (currentSpot != null)
+                {
+                        return "fishing at " + currentSpot.getWorldLocation();
+                }
+                return pendingSpot != null ? "tapped spot, waiting" : "looking for a spot";
         }
 }
