@@ -142,13 +142,16 @@ public class AutoWoodcutPlugin extends Plugin
         private GameObject lastTree;
         private int pendingAttempts;
 
-        private WorldPoint huntCenter; // null = centre on the player
+        private WorldPoint huntCenter; // manual centre from the settings, or null
+        /** Where the player stood when the script was switched on (Microbot's centerLocation). */
+        private WorldPoint startAnchor;
 
         /** Walking back from the bank to the work area. */
         private boolean returning;
         private WorldPoint returnPoint;
         /** No usable bank: stay put until the inventory is no longer full. */
         private boolean bankBlocked;
+        private int bankBlockedTicks;
 
         @Provides
         AutoWoodcutConfig provideConfig(ConfigManager configManager)
@@ -230,17 +233,52 @@ public class AutoWoodcutPlugin extends Plugin
                 }
         }
 
+        /**
+         * The area centre, the way Microbot's AIO fighter does it: the manually set tile, else
+         * the tile the player stood on when the script was switched on. It never follows the player.
+         */
         private WorldPoint huntCenter(Player local)
         {
                 if (huntCenter != null)
                 {
                         return huntCenter;
                 }
+                if (startAnchor != null)
+                {
+                        return startAnchor;
+                }
                 if ((bankSession != null && bankSession.isActive() || returning) && returnPoint != null)
                 {
                         return returnPoint;
                 }
                 return local == null ? null : local.getWorldLocation();
+        }
+
+        /** Sets / clears the start anchor as the script is switched on / off. Client thread. */
+        private void updateAnchor(Player local)
+        {
+                if (!config.autoChop())
+                {
+                        startAnchor = null;
+                }
+                else if (startAnchor == null && local != null && local.getWorldLocation() != null)
+                {
+                        startAnchor = local.getWorldLocation();
+                        input.log("area centre = start tile " + startAnchor);
+                }
+        }
+
+        /** True when the player is outside the area (more than the radius from its centre). */
+        private boolean outsideArea(Player local)
+        {
+                WorldPoint c = huntCenter(local);
+                WorldPoint here = local.getWorldLocation();
+                if (!config.useHuntRange() || c == null || here == null)
+                {
+                        return false;
+                }
+                return c.getPlane() != here.getPlane()
+                        || Math.max(Math.abs(here.getX() - c.getX()), Math.abs(here.getY() - c.getY())) > config.huntRadius();
         }
 
         String getCenterLabel()
@@ -254,7 +292,7 @@ public class AutoWoodcutPlugin extends Plugin
                 {
                         return "-";
                 }
-                return (huntCenter == null ? "self" : center.getX() + "," + center.getY())
+                return (huntCenter == null ? "start " : "") + center.getX() + "," + center.getY()
                         + " r" + config.huntRadius();
         }
 
@@ -504,6 +542,17 @@ public class AutoWoodcutPlugin extends Plugin
          */
         private void automate()
         {
+                updateAnchor(client.getLocalPlayer());
+                // A blocked bank trip is retried after ~30s instead of standing still for good.
+                if (bankBlocked && ++bankBlockedTicks > 50)
+                {
+                        bankBlocked = false;
+                        bankBlockedTicks = 0;
+                }
+                else if (!bankBlocked)
+                {
+                        bankBlockedTicks = 0;
+                }
                 Player local = client.getLocalPlayer();
                 if (local == null)
                 {
@@ -589,7 +638,7 @@ public class AutoWoodcutPlugin extends Plugin
                         }
                         else if (mode == AutoWoodcutConfig.FullInventoryMode.BANK && !bankBlocked)
                         {
-                                returnPoint = huntCenter != null ? huntCenter : local.getWorldLocation();
+                                returnPoint = huntCenter(local);
                                 if (!bankSession.begin(local, config.bankMaxDistance(), this::isKept, Collections.emptyList(), chosenBank()))
                                 {
                                         bankBlocked = true;
@@ -684,6 +733,16 @@ public class AutoWoodcutPlugin extends Plugin
                         pendingTicks = 0;
                 }
 
+                // Nothing to chop here and outside the area: walk back to its centre.
+                if (nextTree == null && currentTree == null && !input.isBusy() && outsideArea(local))
+                {
+                        returnPoint = huntCenter(local);
+                        returning = true;
+                        walker.start(Collections.singletonList(returnPoint), 1, 600);
+                        input.log("outside the area: walking back to " + returnPoint);
+                        return;
+                }
+
                 if (nextTree != null && !input.isBusy())
                 {
                         GameObject victim = nextTree;
@@ -747,7 +806,7 @@ public class AutoWoodcutPlugin extends Plugin
                 }
                 if (bankBlocked)
                 {
-                        return "Bank blocked";
+                        return "Bank blocked: " + (bankSession.failure() == null ? "?" : bankSession.failure());
                 }
                 return currentTree != null ? "Chopping" : "Idle";
         }

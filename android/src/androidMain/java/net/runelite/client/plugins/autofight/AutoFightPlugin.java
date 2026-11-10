@@ -234,6 +234,7 @@ public class AutoFightPlugin extends Plugin
         private boolean returning;
         private WorldPoint returnPoint;
         private boolean bankBlocked;
+        private int bankBlockedTicks;
         private boolean bankFailNotified;
         private final java.util.Map<NPC, Long> unreachableUntil = new java.util.HashMap<>();
 
@@ -274,7 +275,9 @@ public class AutoFightPlugin extends Plugin
         private NPC lastVictim;
         private int pendingAttempts;
 
-        private WorldPoint huntCenter; // null = centre on the player
+        private WorldPoint huntCenter; // manual centre from the settings, or null
+        /** Where the player stood when the script was switched on (Microbot's centerLocation). */
+        private WorldPoint startAnchor;
 
 
 
@@ -401,13 +404,49 @@ public class AutoFightPlugin extends Plugin
                 }
         }
 
+        /**
+         * The area centre, the way Microbot's AIO fighter does it: the manually set tile, else
+         * the tile the player stood on when the script was switched on. It never follows the
+         * player, so the script cannot drift away chasing targets.
+         */
         private WorldPoint huntCenter(Player local)
         {
                 if (huntCenter != null)
                 {
                         return huntCenter;
                 }
+                if (startAnchor != null)
+                {
+                        return startAnchor;
+                }
                 return local == null ? null : local.getWorldLocation();
+        }
+
+        /** Sets / clears the start anchor as the script is switched on / off. Client thread. */
+        private void updateAnchor(Player local)
+        {
+                if (!config.autoAttack())
+                {
+                        startAnchor = null;
+                }
+                else if (startAnchor == null && local != null && local.getWorldLocation() != null)
+                {
+                        startAnchor = local.getWorldLocation();
+                        input.log("area centre = start tile " + startAnchor);
+                }
+        }
+
+        /** True when the player is outside the area (more than the radius from its centre). */
+        private boolean outsideArea(Player local)
+        {
+                WorldPoint c = huntCenter(local);
+                WorldPoint here = local.getWorldLocation();
+                if (!config.useHuntRange() || c == null || here == null)
+                {
+                        return false;
+                }
+                return c.getPlane() != here.getPlane()
+                        || Math.max(Math.abs(here.getX() - c.getX()), Math.abs(here.getY() - c.getY())) > config.huntRadius();
         }
 
         /** Chebyshev distance, so a radius of 6 is the 13x13 square the player sees. */
@@ -438,19 +477,14 @@ public class AutoFightPlugin extends Plugin
                 {
                         return "-";
                 }
-                return (huntCenter == null ? "self" : center.getX() + "," + center.getY())
+                return (huntCenter == null ? "start " : "") + center.getX() + "," + center.getY()
                         + " r" + config.huntRadius();
         }
 
         /** Centre tile for the world-space range overlay; null when not determinable. */
         WorldPoint getHuntCenterWorld()
         {
-                if (huntCenter != null)
-                {
-                        return huntCenter;
-                }
-                Player local = client.getLocalPlayer();
-                return local == null ? null : local.getWorldLocation();
+                return huntCenter(client.getLocalPlayer());
         }
 
         /** Rebuilds the matching list from the live scene. Cheap, and cannot go stale. */
@@ -695,6 +729,17 @@ public class AutoFightPlugin extends Plugin
 
         private void automate()
         {
+                updateAnchor(client.getLocalPlayer());
+                // A blocked bank trip is retried after ~30s instead of standing still for good.
+                if (bankBlocked && ++bankBlockedTicks > 50)
+                {
+                        bankBlocked = false;
+                        bankBlockedTicks = 0;
+                }
+                else if (!bankBlocked)
+                {
+                        bankBlockedTicks = 0;
+                }
                 if (eatCooldown > 0)
                 {
                         eatCooldown--;
@@ -834,6 +879,17 @@ public class AutoFightPlugin extends Plugin
                 if (config.autoLoot() && !drops.isEmpty() && (nextTarget == null || dropsAboutToExpire()))
                 {
                         startLooting();
+                        return;
+                }
+
+                // Nothing to fight here and outside the area: walk back to its centre (Microbot's
+                // AIO fighter does the same with walkTo(centerLocation)).
+                if (nextTarget == null && outsideArea(local))
+                {
+                        returnPoint = huntCenter(local);
+                        returning = true;
+                        walker.start(Collections.singletonList(returnPoint), 1, 600);
+                        input.log("outside the area: walking back to " + returnPoint);
                         return;
                 }
 
@@ -1242,7 +1298,7 @@ public class AutoFightPlugin extends Plugin
                 {
                         needs.add(new BankSession.Need(withdrawItemsList, e, e.quantity, false));
                 }
-                returnPoint = huntCenter != null ? huntCenter : local.getWorldLocation();
+                returnPoint = huntCenter(local);
                 pendingTarget = null;
                 pendingTicks = 0;
                 if (!bankSession.begin(local, config.bankMaxDistance(), this::keepOnDeposit, needs, chosenBank()))
@@ -1617,7 +1673,7 @@ public class AutoFightPlugin extends Plugin
                 }
                 if (bankBlocked)
                 {
-                        return "Bank blocked";
+                        return "Bank blocked: " + (bankSession.failure() == null ? "?" : bankSession.failure());
                 }
                 return currentTarget != null ? "Fighting" : "Idle";
         }

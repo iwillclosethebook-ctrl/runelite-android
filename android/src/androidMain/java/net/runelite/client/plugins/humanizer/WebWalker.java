@@ -184,6 +184,12 @@ public final class WebWalker
                         return;
                 }
                 final WorldCollision map = WorldCollision.get();
+                if (map == null && (WorldCollision.failed() || ++mapWaitRequests > 40))
+                {
+                        // No world map: head straight for the closest goal rather than stand still.
+                        straightFallback(local.getWorldLocation());
+                        return;
+                }
                 if (map == null)
                 {
                         waitingForMap = true;
@@ -220,10 +226,49 @@ public final class WebWalker
                         {
                                 return;
                         }
+                        if (r == null && !targets.isEmpty())
+                        {
+                                // No route in the map data: fall back to a straight line rather than give up.
+                                WorldPoint goal = nearestGoal(from, goals);
+                                r = PathFinder.straight(from, goal, goals.indexOf(goal));
+                                input.log("no mapped path; walking straight toward " + goal);
+                        }
                         pathResult = r;
                         pathPending = false;
                         input.log(r == null ? "no path found" : "path: " + r.steps.size() + " tiles, cost " + r.cost);
                 });
+        }
+
+        private int mapWaitRequests;
+
+        private static WorldPoint nearestGoal(WorldPoint from, List<WorldPoint> goals)
+        {
+                WorldPoint best = goals.get(0);
+                int bestD = Integer.MAX_VALUE;
+                for (WorldPoint g : goals)
+                {
+                        int d = Math.max(Math.abs(g.getX() - from.getX()), Math.abs(g.getY() - from.getY() % 6400));
+                        if (g.getPlane() == from.getPlane() && d < bestD)
+                        {
+                                best = g;
+                                bestD = d;
+                        }
+                }
+                return best;
+        }
+
+        private void straightFallback(WorldPoint from)
+        {
+                waitingForMap = false;
+                pathPending = false;
+                if (from == null || targets.isEmpty())
+                {
+                        pathResult = null;
+                        return;
+                }
+                WorldPoint goal = nearestGoal(from, targets);
+                pathResult = PathFinder.straight(from, goal, targets.indexOf(goal));
+                input.log("world map unavailable; walking straight toward " + goal);
         }
 
         private int reroute()

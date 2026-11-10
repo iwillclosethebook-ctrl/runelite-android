@@ -185,14 +185,40 @@ public final class BankSession
                         list.add(b);
                         points.add(wp);
                 }
+                int cost = maxDistance * 3 + 120;
                 if (list.isEmpty())
                 {
-                        failure = "No usable bank within " + maxDistance + " tiles";
-                        return false;
+                        // Nothing inside the limit: take the few nearest usable banks anywhere
+                        // rather than stand still with a full inventory.
+                        List<BankLocation> all = new ArrayList<>();
+                        for (BankLocation b : BankLocation.values())
+                        {
+                                if (b.getNote() == null && b.isAccessible(client))
+                                {
+                                        all.add(b);
+                                }
+                        }
+                        final WorldPoint surface = new WorldPoint(here.getX(), here.getY() % 6400, here.getPlane());
+                        all.sort((a, b) -> Integer.compare(
+                                Math.min(cheb(here, a.getWorldPoint()), cheb(surface, a.getWorldPoint())),
+                                Math.min(cheb(here, b.getWorldPoint()), cheb(surface, b.getWorldPoint()))));
+                        for (int i = 0; i < Math.min(4, all.size()); i++)
+                        {
+                                list.add(all.get(i));
+                                points.add(all.get(i).getWorldPoint());
+                                int d = Math.min(cheb(here, all.get(i).getWorldPoint()), cheb(surface, all.get(i).getWorldPoint()));
+                                cost = Math.max(cost, d * 3 + 200);
+                        }
+                        if (list.isEmpty())
+                        {
+                                failure = "No usable bank";
+                                return false;
+                        }
+                        input.log("no bank within " + maxDistance + " tiles; using the nearest ones further away");
                 }
                 candidates = list;
                 step = Step.WALK;
-                walker.start(points, 3, maxDistance * 3 + 120);
+                walker.start(points, 3, cost);
                 input.log("bank trip: " + list.size() + " candidate banks");
                 return true;
         }

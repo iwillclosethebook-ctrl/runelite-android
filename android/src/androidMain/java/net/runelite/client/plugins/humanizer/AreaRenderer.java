@@ -111,7 +111,7 @@ public final class AreaRenderer
                                 g.setColor(edge);
                                 g.drawPolygon(tile);
                         }
-                        String label = fixed ? "Area centre (r" + r + ")" : "Area follows you (r" + r + ")";
+                        String label = fixed ? "Area centre (r" + r + ")" : "Area centre: start tile (r" + r + ")";
                         Point text = Perspective.getCanvasTextLocation(client, g, lp, label, 0);
                         if (text != null)
                         {

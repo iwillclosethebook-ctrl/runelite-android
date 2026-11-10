@@ -306,7 +306,7 @@ public interface AutoWoodcutConfig extends Config
                 keyName = "huntRadius",
                 name = "Area radius (tiles)",
                 description = "Tiles out from the centre tile. 6 gives a 13x13 square. With no centre marked, the "
-                        + "square follows you.",
+                        + "square is centred on the tile you stood on when you switched the script on (like Microbot).",
                 section = huntSection,
                 position = 1
         )

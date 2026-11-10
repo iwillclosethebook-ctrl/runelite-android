@@ -50,6 +50,13 @@ public final class WorldCollision
 
         private static volatile WorldCollision instance;
         private static volatile boolean loading;
+        private static volatile boolean failed;
+
+        /** True when the map could not be loaded (callers fall back to straight-line walking). */
+        public static boolean failed()
+        {
+                return failed;
+        }
 
         private final Map<Integer, BitSet> regions;
         private final Map<Integer, Integer> planeCounts;
@@ -74,7 +81,7 @@ public final class WorldCollision
 
         public static synchronized void startLoading()
         {
-                if (instance != null || loading)
+                if (instance != null || loading || failed)
                 {
                         return;
                 }
@@ -88,6 +95,7 @@ public final class WorldCollision
                         catch (Throwable e)
                         {
                                 Log.e(TAG, "could not load collision map", e);
+                                failed = true;
                         }
                         finally
                         {

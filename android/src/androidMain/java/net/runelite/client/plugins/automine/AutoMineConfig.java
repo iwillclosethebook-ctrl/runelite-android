@@ -16,6 +16,7 @@ public interface AutoMineConfig extends Config
         String ROCK_KEY = "rock";
         String KEEP_ITEMS_KEY = "keepItems";
         String CENTER_KEY = "centerTile";
+        String ROCKS_KEY = "selectedRocks";
 
         @ConfigSection(name = "Rocks", description = "Which rocks to mine", position = 0)
         String rocksSection = "rocks";
@@ -306,7 +307,7 @@ public interface AutoMineConfig extends Config
                 keyName = "huntRadius",
                 name = "Area radius (tiles)",
                 description = "Tiles out from the centre tile. 6 gives a 13x13 square. With no centre marked, the "
-                        + "square follows you.",
+                        + "square is centred on the tile you stood on when you switched the script on (like Microbot).",
                 section = huntSection,
                 position = 1
         )
@@ -318,13 +319,40 @@ public interface AutoMineConfig extends Config
         @ConfigItem(
                 keyName = CENTER_KEY,
                 name = "Area centre tile",
-                description = "x,y,plane of the area centre. Leave empty to centre on yourself, or right-click the "
-                        + "ground (long-press) and pick 'WC-Set area centre' to mark it. 'WC-Clear area centre' removes it.",
+                description = "x,y,plane of the area centre. Leave empty to centre on the tile where you switched mining on, or right-click the "
+                        + "ground (long-press) and pick 'MINE-Set area centre' to mark it. 'MINE-Clear area centre' removes it.",
                 section = huntSection,
                 position = 2
         )
         default String centerTile()
         {
                 return "";
+        }
+
+        @ConfigItem(
+                keyName = ROCKS_KEY,
+                name = "Selected rocks",
+                description = "Rocks you picked yourself: long-press a rock and choose 'MINE-Select rock' (again for "
+                        + "'MINE-Unselect rock'). When any are selected, only those rocks are mined, whatever their ore, "
+                        + "and the area is not used. Stored as x,y,plane;x,y,plane. Clear the box to go back to the area.",
+                section = huntSection,
+                position = 0
+        )
+        default String selectedRocks()
+        {
+                return "";
+        }
+
+        @ConfigItem(
+                keyName = "hoverNextRock",
+                name = "Rest finger on next rock",
+                description = "While mining, move the finger onto the next rock and keep it there, so the moment the "
+                        + "current rock runs out the next one is tapped straight away. Nothing else moves the finger meanwhile.",
+                section = huntSection,
+                position = 3
+        )
+        default boolean hoverNextRock()
+        {
+                return true;
         }
 }

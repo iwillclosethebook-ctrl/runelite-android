@@ -221,7 +221,12 @@ public final class HumanInput
         {
                 maybeRotatePersona();
                 XpGlance xp = xpGlance();
-                xp.tick(client, trainedSkill, waiting);
+                // A finger resting on the next target is not to be disturbed.
+                xp.tick(client, trainedSkill, waiting && !touch.isParked());
+                if (touch.isParked())
+                {
+                        return;
+                }
                 if (xp.active())
                 {
                         return;
@@ -332,6 +337,23 @@ public final class HumanInput
         public boolean pressKey(int vk, String label)
         {
                 return touch.pressKey(vk, label);
+        }
+
+        /**
+         * Moves the finger onto {@code target} and leaves it resting there (no tap), so the
+         * next {@link #interact} on the same target is a near-instant tap from where the
+         * finger already is. While parked, idle drift and XP checks leave the finger alone.
+         * Returns true when the finger is (or is now going) on the target.
+         */
+        public boolean park(Target target)
+        {
+                return touch.park(target);
+        }
+
+        /** True when the finger rests on {@code target} (see {@link #park}). */
+        public boolean isParkedOn(Target target)
+        {
+                return touch.isParkedOn(target);
         }
 
         /** Rest the finger on a point for a while without tapping (curved approach, tiny wander). */
@@ -1195,15 +1217,16 @@ public final class HumanInput
                         }
 
                         Persona p = persona;
-                        boolean useMenu = menuForced || random.nextInt(100) < p.menuChance;
+                        boolean parkedHere = isParkedOn(target) && parkedPoint != null && !menuForced;
+                        boolean useMenu = !parkedHere && (menuForced || random.nextInt(100) < p.menuChance);
                         Placement placement = useMenu ? Placement.TIGHT_BOX : p.placement;
 
-                        int[] pt = tapPoint(target, placement);
+                        int[] pt = parkedHere ? parkedPoint : tapPoint(target, placement);
                         if (pt == null)
                         {
                                 return false;
                         }
-                        int[] ground = useMenu || !allowMisclick ? null : groundMisclickPoint(target);
+                        int[] ground = useMenu || !allowMisclick || parkedHere ? null : groundMisclickPoint(target);
 
                         int[] dismiss = currentMenuDismissPoint();
                         if (client.isMenuOpen() && dismiss == null)
@@ -1217,6 +1240,11 @@ public final class HumanInput
                         if (System.currentTimeMillis() - personaChangedAt < 5000L)
                         {
                                 pad += 350 + random.nextInt(850);
+                        }
+                        if (parkedHere)
+                        {
+                                // Finger already on it, eyes already on it: just press.
+                                pad = 25 + random.nextInt(70);
                         }
 
                         final int gen = ++generation;
@@ -1238,6 +1266,76 @@ public final class HumanInput
                         try
                         {
                                 timeline.execute(() -> runInteract(gen, victim, style, menu, action, point, groundPoint, dismissPoint, padMs));
+                        }
+                        catch (RuntimeException rejected)
+                        {
+                                busy = false;
+                                return false;
+                        }
+                        return true;
+                }
+
+                private volatile Target parkedTarget;
+                private volatile int[] parkedPoint;
+                private volatile int parkedGen;
+
+                boolean isParked()
+                {
+                        return parkedTarget != null && parkedGen == generation;
+                }
+
+                boolean isParkedOn(Target target)
+                {
+                        return isParked() && target != null && target.equals(parkedTarget);
+                }
+
+                boolean park(Target target)
+                {
+                        if (isParkedOn(target))
+                        {
+                                return true;
+                        }
+                        if (!running || busy || persona == null || target == null || client.isMenuOpen())
+                        {
+                                return false;
+                        }
+                        int[] pt = tapPoint(target, Placement.TIGHT_BOX);
+                        if (pt == null)
+                        {
+                                return false;
+                        }
+                        final int gen = ++generation;
+                        busy = true;
+                        try
+                        {
+                                timeline.execute(() ->
+                                {
+                                        try
+                                        {
+                                                // A short look-over first, then a curved glide onto the target.
+                                                if (!sleep(120 + random.nextInt(260)) || aborted(gen))
+                                                {
+                                                        return;
+                                                }
+                                                approachTrail(gen, pt[0], pt[1]);
+                                                if (aborted(gen))
+                                                {
+                                                        return;
+                                                }
+                                                emitMove(gen, pt[0], pt[1]);
+                                                parkedPoint = pt;
+                                                parkedTarget = target;
+                                                parkedGen = gen;
+                                                if (config.logInput())
+                                                {
+                                                        Log.i(LOG_TAG, "parked on next target at " + pt[0] + "," + pt[1]);
+                                                }
+                                        }
+                                        finally
+                                        {
+                                                busy = false;
+                                        }
+                                });
                         }
                         catch (RuntimeException rejected)
                         {
@@ -2023,7 +2121,7 @@ public final class HumanInput
                                                 return;
                                         }
                                         emitMove(gen, target.x, target.y);
-                                        if (!sleep(18 + random.nextInt(30)) || aborted(gen))
+                                        if (!sleep(8 + random.nextInt(18)) || aborted(gen))
                                         {
                                                 return;
                                         }
@@ -2400,7 +2498,7 @@ public final class HumanInput
                         // so a flick between neighbouring slots is quick and a glide across the
                         // screen takes longer without growing linearly. Random spread on top.
                         double fitts = Math.log(1.0d + dist / 18.0d) / Math.log(2.0d);
-                        int duration = (int) Math.min(520.0d, 35.0d + 72.0d * fitts) + random.nextInt(70);
+                        int duration = (int) Math.min(480.0d, 25.0d + 55.0d * fitts) + random.nextInt(50);
                         harmonicPath(gen, lastX, lastY, toX, toY, duration);
                 }
 
@@ -2634,10 +2732,10 @@ public final class HumanInput
                                                 return Boolean.FALSE;
                                         }
                                         MenuEntry top = entries[entries.length - 1];
-                                        String option = top.getOption() == null ? "" : Text.removeTags(top.getOption());
+                                        // Only the slot matters: a wrong slot is re-aimed, anything else is tapped.
                                         boolean itemOk = top.getItemId() <= 0 || top.getItemId() == target.itemId;
-                                        return option.equalsIgnoreCase(wanted) && top.getParam0() == target.slot && itemOk;
-                                }, 28 + random.nextInt(18));
+                                        return top.getParam0() == target.slot && itemOk;
+                                }, 0);
                                 if (aborted(gen))
                                 {
                                         return null;
@@ -2712,7 +2810,7 @@ public final class HumanInput
                         });
                         try
                         {
-                                if (!done.await(250, TimeUnit.MILLISECONDS))
+                                if (!done.await(80, TimeUnit.MILLISECONDS))
                                 {
                                         return null;
                                 }

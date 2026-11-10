@@ -43,6 +43,27 @@ public final class PathFinder
                 }
         }
 
+        /**
+         * A plain straight line of tiles from {@code from} to {@code to} (no doors, no
+         * stairs). Used when the world map is unavailable or no route was found, so the
+         * player at least heads toward the goal instead of standing still; the game's own
+         * pathing handles small obstacles on each minimap tap.
+         */
+        public static Result straight(WorldPoint from, WorldPoint to, int targetIndex)
+        {
+                List<Step> steps = new java.util.ArrayList<>();
+                int dx = to.getX() - from.getX();
+                int dy = to.getY() - from.getY();
+                int n = Math.max(Math.abs(dx), Math.abs(dy));
+                for (int i = 0; i <= n; i++)
+                {
+                        int x = from.getX() + (n == 0 ? 0 : (int) Math.round(dx * (double) i / n));
+                        int y = from.getY() + (n == 0 ? 0 : (int) Math.round(dy * (double) i / n));
+                        steps.add(new Step(x, y, from.getPlane(), null));
+                }
+                return new Result(steps, targetIndex, n);
+        }
+
         public static final class Result
         {
                 /** From the start tile (index 0) to the arrival tile. */
