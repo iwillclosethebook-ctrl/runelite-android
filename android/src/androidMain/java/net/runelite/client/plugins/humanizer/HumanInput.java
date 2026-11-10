@@ -393,6 +393,17 @@ public final class HumanInput
                 return touch.isParkedOn(target);
         }
 
+        private volatile double speedBoost = 1.0d;
+
+        /**
+         * Per-script finger speed on top of the base pace (1.0 = normal, which is already
+         * 1.5x the original; 2.0 = 3x the original). Paths keep their shape, only faster.
+         */
+        public void setSpeedBoost(double boost)
+        {
+                this.speedBoost = Math.max(0.5d, Math.min(3.0d, boost));
+        }
+
         /** Rest the finger on a point for a while without tapping (curved approach, tiny wander). */
         public boolean hover(int[] point, int dwellMs, String label)
         {
@@ -2713,7 +2724,7 @@ public final class HumanInput
                         double swellPhase = random.nextDouble() * 2.0d * Math.PI;
 
                         // Everything moves 1.5x faster than the original pacing.
-                        durationMs = (int) Math.round(durationMs / MOVE_SPEED);
+                        durationMs = (int) Math.round(durationMs / (MOVE_SPEED * speedBoost));
                         int steps = Math.max(4, Math.min(34, (int) Math.round(dist / 11.0d)));
                         double stepDur = Math.max(6.0d, durationMs / (double) steps);
                         for (int i = 1; i <= steps; i++)

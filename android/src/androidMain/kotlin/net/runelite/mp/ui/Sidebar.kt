@@ -59,7 +59,7 @@ import net.runelite.mp.wear.WatchLink
 
 
 /** Package prefixes of the auto scripts and their helpers, shown in the Scripts tab only. */
-private val SCRIPT_PACKAGES = listOf("autofight", "autofish", "autowoodcut", "automine", "mobiledevtools", "humanizer")
+private val SCRIPT_PACKAGES = listOf("autofight", "autofish", "autowoodcut", "automine", "autoagility", "mobiledevtools", "humanizer")
     .map { "net.runelite.client.plugins.$it." }
 
 internal fun isScriptRow(row: PluginRow): Boolean = SCRIPT_PACKAGES.any { row.rowKey.startsWith(it) }

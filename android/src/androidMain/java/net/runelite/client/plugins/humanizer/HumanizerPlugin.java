@@ -268,7 +268,7 @@ public class HumanizerPlugin extends Plugin
                 }
                 String g = e.getGroup();
                 if ("humanizer".equals(g) || "autofight".equals(g) || "autofish".equals(g) || "autowoodcut".equals(g)
-                        || "automine".equals(g) || "mobiledevtools".equals(g))
+                        || "automine".equals(g) || "autoagility".equals(g) || "mobiledevtools".equals(g))
                 {
                         SessionLog.INSTANCE.line("CONFIG", g + "." + e.getKey() + " = " + e.getNewValue());
                 }
