@@ -35,8 +35,8 @@ import net.runelite.client.util.Text;
  * Withdraw-X amounts typed in.
  *
  * <p>Call {@link #begin} once, then {@link #tick} every game tick until it returns
- * {@link #DONE} or {@link #FAILED} (see {@link #failure()}). The bank is left open; the
- * walk back closes it.</p>
+ * {@link #DONE} or {@link #FAILED} (see {@link #failure()}). The bank is closed (Esc or
+ * the X button) before DONE.</p>
  */
 public final class BankSession
 {
@@ -72,7 +72,8 @@ public final class BankSession
                 WALK,
                 OPEN,
                 DEPOSIT,
-                WITHDRAW
+                WITHDRAW,
+                CLOSE
         }
 
         private final Client client;
@@ -275,6 +276,8 @@ public final class BankSession
                                 return "Opening bank";
                         case DEPOSIT:
                                 return "Depositing";
+                        case CLOSE:
+                                return "Closing bank";
                         default:
                                 return "Withdrawing";
                 }
@@ -452,6 +455,8 @@ public final class BankSession
                                 }
                                 return BUSY;
                         }
+                        case CLOSE:
+                                return closeStep();
                         case WITHDRAW:
                         default:
                                 return tickWithdraw();
@@ -542,8 +547,56 @@ public final class BankSession
                                 return BUSY;
                         }
                 }
-                step = null;
-                return DONE;
+                // Close the bank before walking back: on mobile the open bank covers the
+                // minimap, so walking taps would land on the bank window instead.
+                enter(Step.CLOSE);
+                return BUSY;
+        }
+
+        /**
+         * Closes the bank like Microbot's Rs2Bank.closeBank: Escape when the game's
+         * "Esc closes the current interface" keybind is on (a real key press), otherwise
+         * the X button (child 11 of the bank frame). Alternates if one does not work.
+         */
+        private int closeStep()
+        {
+                if (!bankOpen())
+                {
+                        step = null;
+                        return DONE;
+                }
+                if (stepTicks > 12)
+                {
+                        // Could not close it: carry on anyway (the walk will try again).
+                        step = null;
+                        return DONE;
+                }
+                boolean escOn = client.getVarbitValue(net.runelite.api.gameval.VarbitID.KEYBINDING_ESC_TO_CLOSE) == 1;
+                boolean useEsc = escOn && (stepTicks <= 4 ? input.random().nextInt(100) < 70 : stepTicks % 2 == 0);
+                if (useEsc)
+                {
+                        input.pressKey(java.awt.event.KeyEvent.VK_ESCAPE, "close bank (Esc)");
+                }
+                else
+                {
+                        Widget frame = client.getWidget(InterfaceID.Bankmain.FRAME);
+                        Widget close = frame == null ? null : frame.getChild(11);
+                        if (close == null || close.isHidden())
+                        {
+                                close = GameHelpers.findWidgetWithAction(client, "Close");
+                        }
+                        int[] p = close == null ? null : input.widgetPoint(close);
+                        if (p != null)
+                        {
+                                input.tap(p, "close bank");
+                        }
+                        else if (escOn)
+                        {
+                                input.pressKey(java.awt.event.KeyEvent.VK_ESCAPE, "close bank (Esc)");
+                        }
+                }
+                wait = 1 + input.random().nextInt(2);
+                return BUSY;
         }
 
         private int withdrawStep(Need need, int missing, int have)
