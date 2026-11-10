@@ -1079,4 +1079,45 @@ public class AutoWoodcutPlugin extends Plugin
         {
                 return net.runelite.client.plugins.gamedata.BankPick.resolve(config.bankPick(), input.config().defaultBank());
         }
+
+        /**
+         * The tree we are working (or just tapped) is gone: depleted, or taken by
+         * someone else. The animation alone can't tell, so this reacts the moment the
+         * object leaves the scene and moves to the next tree straight away.
+         */
+        @Subscribe
+        public void onGameObjectDespawned(net.runelite.api.events.GameObjectDespawned event)
+        {
+                GameObject gone = event.getGameObject();
+                if (gone == null)
+                {
+                        return;
+                }
+                boolean ours = gone == choppingTree || gone == currentTree || gone == pendingTree;
+                trees.remove(gone);
+                if (gone == nextTree)
+                {
+                        nextTree = null;
+                }
+                if (!ours)
+                {
+                        return;
+                }
+                choppingTree = null;
+                currentTree = null;
+                pendingTree = null;
+                lastAnimTick = -100;
+                input.log("tree gone (depleted or taken): switching now");
+                if (config.autoChop() && !dropping && !bankSession.isActive() && !returning)
+                {
+                        waitTicks = 0;
+                        updateTreesNow();
+                        automate();
+                }
+        }
+
+        private void updateTreesNow()
+        {
+                updateTrees();
+        }
 }

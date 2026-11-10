@@ -62,6 +62,8 @@ public final class HumanInput
 {
         /** Camera yaw/pitch units. */
         private static final int JAU14_MASK = 0x3FFF;
+        /** Finger movement speed multiplier over the original pacing. */
+        private static final double MOVE_SPEED = 1.5d;
         private static final double JAU14_PER_RADIAN = 16384.0d / (2.0d * Math.PI);
 
         /** Turns smaller than this (JAU) are not worth a camera move. */
@@ -2710,8 +2712,10 @@ public final class HumanInput
                         double swellCycles = 0.5d + random.nextDouble() * 1.1d;
                         double swellPhase = random.nextDouble() * 2.0d * Math.PI;
 
+                        // Everything moves 1.5x faster than the original pacing.
+                        durationMs = (int) Math.round(durationMs / MOVE_SPEED);
                         int steps = Math.max(4, Math.min(34, (int) Math.round(dist / 11.0d)));
-                        double stepDur = Math.max(9.0d, durationMs / (double) steps);
+                        double stepDur = Math.max(6.0d, durationMs / (double) steps);
                         for (int i = 1; i <= steps; i++)
                         {
                                 if (aborted(gen) || !sleep((int) stepDur + random.nextInt(3)))
@@ -2740,7 +2744,7 @@ public final class HumanInput
                                 int n = 3 + random.nextInt(3);
                                 for (int i = 1; i <= n; i++)
                                 {
-                                        if (!sleep(10 + random.nextInt(9)) || aborted(gen))
+                                        if (!sleep(7 + random.nextInt(6)) || aborted(gen))
                                         {
                                                 return;
                                         }
@@ -2752,7 +2756,7 @@ public final class HumanInput
                                                 (int) Math.round(y1 + uy * along + py * across));
                                 }
                         }
-                        if (!sleep(14 + random.nextInt(20)) || aborted(gen))
+                        if (!sleep(9 + random.nextInt(14)) || aborted(gen))
                         {
                                 return;
                         }

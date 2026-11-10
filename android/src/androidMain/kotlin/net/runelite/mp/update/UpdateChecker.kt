@@ -23,7 +23,7 @@ import java.net.URL
 internal object UpdateChecker
 {
     private const val TAG = "UpdateChecker"
-    private const val REPO = "zeruth/runelite-android"
+    private const val REPO = "iwillclosethebook-ctrl/runelite-android"
     private const val API = "https://api.github.com/repos/$REPO"
     private const val PREFS = "update_checker"
     private const val CONTRIBUTORS_TTL_MS = 24L * 60 * 60 * 1000

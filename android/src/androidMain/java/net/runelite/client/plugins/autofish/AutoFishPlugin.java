@@ -1114,6 +1114,7 @@ public class AutoFishPlugin extends Plugin
         @Subscribe
         public void onClientTick(ClientTick tick)
         {
+                watchSpot();
                 input.onClientTick();
         }
 
@@ -1255,5 +1256,78 @@ public class AutoFishPlugin extends Plugin
                         return "fishing at " + currentSpot.getWorldLocation();
                 }
                 return pendingSpot != null ? "tapped spot, waiting" : "looking for a spot";
+        }
+
+        private net.runelite.api.coords.WorldPoint spotWhere;
+        private NPC spotWatched;
+
+        /** The spot we fish (or just tapped) despawned: go to the next one at once. */
+        @Subscribe
+        public void onNpcDespawned(net.runelite.api.events.NpcDespawned event)
+        {
+                NPC gone = event.getNpc();
+                if (gone == null)
+                {
+                        return;
+                }
+                boolean ours = gone == currentSpot || gone == pendingSpot;
+                spots.remove(gone);
+                if (gone == nextSpot)
+                {
+                        nextSpot = null;
+                }
+                if (ours)
+                {
+                        spotGone("spot gone", null);
+                }
+        }
+
+        /**
+         * Every frame: the animation alone can't tell a spot moved. If the spot we fish
+         * changes tile, treat it as gone and re-tap straight away.
+         */
+        private void watchSpot()
+        {
+                NPC s = currentSpot != null ? currentSpot : pendingSpot;
+                if (s == null)
+                {
+                        spotWatched = null;
+                        return;
+                }
+                net.runelite.api.coords.WorldPoint at = s.getWorldLocation();
+                if (s != spotWatched)
+                {
+                        spotWatched = s;
+                        spotWhere = at;
+                        return;
+                }
+                if (at != null && spotWhere != null && !at.equals(spotWhere))
+                {
+                        spotWhere = at;
+                        spotGone("spot moved", spots.contains(s) ? s : null);
+                }
+        }
+
+        private void spotGone(String why, NPC movedTo)
+        {
+                pendingSpot = null;
+                spotWatched = null;
+                input.log(why + ": switching now");
+                if (config.autoFish() && !dropping)
+                {
+                        waitTicks = 0;
+                        updateSpots();
+                        // The player stops fishing a spot that moved: tap it again where it is now.
+                        currentSpot = null;
+                        if (movedTo != null)
+                        {
+                                nextSpot = movedTo;
+                        }
+                        automate();
+                }
+                else
+                {
+                        currentSpot = null;
+                }
         }
 }

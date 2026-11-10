@@ -1216,4 +1216,45 @@ public class AutoMinePlugin extends Plugin
         {
                 return net.runelite.client.plugins.gamedata.BankPick.resolve(config.bankPick(), input.config().defaultBank());
         }
+
+        /**
+         * The rock we are working (or just tapped) is gone: depleted, or taken by
+         * someone else. The animation alone can't tell, so this reacts the moment the
+         * object leaves the scene and moves to the next rock straight away.
+         */
+        @Subscribe
+        public void onGameObjectDespawned(net.runelite.api.events.GameObjectDespawned event)
+        {
+                GameObject gone = event.getGameObject();
+                if (gone == null)
+                {
+                        return;
+                }
+                boolean ours = gone == miningRock || gone == currentRock || gone == pendingRock;
+                rocks.remove(gone);
+                if (gone == nextRock)
+                {
+                        nextRock = null;
+                }
+                if (!ours)
+                {
+                        return;
+                }
+                miningRock = null;
+                currentRock = null;
+                pendingRock = null;
+                lastAnimTick = -100;
+                input.log("rock gone (depleted or taken): switching now");
+                if (config.autoMine() && !dropping && !bankSession.isActive() && !returning)
+                {
+                        waitTicks = 0;
+                        updateRocksNow();
+                        automate();
+                }
+        }
+
+        private void updateRocksNow()
+        {
+                updateRocks();
+        }
 }

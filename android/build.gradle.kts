@@ -71,7 +71,9 @@ configurations.configureEach {
 // runelite-client from repo.runelite.net and desugars + dexes it on the device.
 val versionMajor = 1
 val versionMinor = 0
-val versionPatch = 61
+// On CI every push gets a higher patch number (from the workflow run number), so the
+// in-app updater always sees the newest build as an update.
+val versionPatch = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()?.let { 1000 + it } ?: 61
 val releaseTag = "$versionMajor.$versionMinor.${versionPatch}_${project.version}"
 val releaseVersionCode = (versionMajor * 1_000_000) + (versionMinor * 1_000) + versionPatch
 
