@@ -2109,11 +2109,27 @@ public final class HumanInput
                                         {
                                                 return;
                                         }
-                                        // Slot to slot along a short harmonic curve, then the two parking moves.
-                                        approachTrail(gen, target.x, target.y);
-                                        if (aborted(gen))
+                                        // Slot to slot: a quick two-point sine arc (no full glide,
+                                        // no per-slot checks: this has to be fast).
+                                        int fx = lastX;
+                                        int fy = lastY;
+                                        if (fx >= 0 && fy >= 0 && (fx != target.x || fy != target.y))
                                         {
-                                                return;
+                                                double bow = (random.nextDouble() - 0.5d) * 6.0d;
+                                                double ddx = target.x - fx;
+                                                double ddy = target.y - fy;
+                                                double len = Math.max(1.0d, Math.hypot(ddx, ddy));
+                                                for (int k = 1; k <= 2; k++)
+                                                {
+                                                        double t = k / 3.0d;
+                                                        double off = bow * Math.sin(Math.PI * t);
+                                                        emitMove(gen, (int) Math.round(fx + ddx * t - ddy / len * off),
+                                                                (int) Math.round(fy + ddy * t + ddx / len * off));
+                                                        if (!sleep(3 + random.nextInt(5)) || aborted(gen))
+                                                        {
+                                                                return;
+                                                        }
+                                                }
                                         }
                                         emitMove(gen, target.x, target.y);
                                         if (!sleep(4 + random.nextInt(10)) || aborted(gen))
@@ -2121,31 +2137,11 @@ public final class HumanInput
                                                 return;
                                         }
                                         emitMove(gen, target.x, target.y);
-                                        if (!sleep(8 + random.nextInt(18)) || aborted(gen))
+                                        if (!sleep(18 + random.nextInt(30)) || aborted(gen))
                                         {
                                                 return;
                                         }
-                                        // Look before tapping: the tap here must be "Drop" on this very slot.
-                                        int[] aim = aimSlot(gen, target, "Drop");
-                                        if (aborted(gen))
-                                        {
-                                                return;
-                                        }
-                                        if (aim == null)
-                                        {
-                                                // A plain tap here would not drop it (shift-drop off,
-                                                // slot moved): long-press and pick "Drop" instead.
-                                                if (config.logInput())
-                                                {
-                                                        Log.i(LOG_TAG, "shift-drop: slot " + target.slot + " not lined up, dropping from the menu");
-                                                }
-                                                menuWalk(gen, new int[] {lastX, lastY}, p, "Drop", null);
-                                                if (!sleep(60 + random.nextInt(90)))
-                                                {
-                                                        return;
-                                                }
-                                                continue;
-                                        }
+                                        int[] aim = {target.x, target.y};
                                         emitBurst(gen, aim[0], aim[1], MouseEvent.BUTTON1);
                                         if (config.logInput())
                                         {
