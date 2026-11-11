@@ -52,6 +52,7 @@ class ScriptsPanel extends PluginPanel
                 SCRIPTS.add(new Script("AutoFish", "net.runelite.client.plugins.autofish.AutoFishPlugin", "autofish", "autoFish", "Fish, drop"));
                 SCRIPTS.add(new Script("AutoWoodcut", "net.runelite.client.plugins.autowoodcut.AutoWoodcutPlugin", "autowoodcut", "autoChop", "Chop, bank or drop"));
                 SCRIPTS.add(new Script("AutoMine", "net.runelite.client.plugins.automine.AutoMinePlugin", "automine", "autoMine", "Mine, bank or drop"));
+                SCRIPTS.add(new Script("AutoTithe", "net.runelite.client.plugins.autotithe.AutoTithePlugin", "autotithe", "autoTithe", "Tithe Farm minigame"));
                 SCRIPTS.add(new Script("AutoAgility", "net.runelite.client.plugins.autoagility.AutoAgilityPlugin", "autoagility", "autoAgility", "Rooftops: Varrock, Canifis, Seers'"));
         }
 
